@@ -29,6 +29,8 @@ from cypilot.ui.models import NodeTableModel
 from cypilot.ui.panels import LogPanel, RegisterPanel
 from cypilot.ui.simulation_panel import SimulationPanel
 
+MESSAGE_HISTORY = 200
+
 
 class MainWindow(QMainWindow):
     def __init__(self, bus: Bus | None = None, parent: QWidget | None = None) -> None:
@@ -108,6 +110,8 @@ class MainWindow(QMainWindow):
         self.feed_timer.start()
         self._selected: int | None = None
         self._nodes: list[NodeSummary] = []
+        self.messages: list[str] = []
+        """The last status messages, oldest first."""
         self._status("not connected")
 
     def stop_all(self) -> None:
@@ -205,3 +209,9 @@ class MainWindow(QMainWindow):
 
     def _status(self, text: str) -> None:
         self.statusBar().showMessage(text)
+        self.messages.append(text)
+        del self.messages[:-MESSAGE_HISTORY]
+
+    def saw(self, text: str) -> bool:
+        """True if a status message containing ``text`` was shown (one may follow another at once)."""
+        return any(text in message for message in self.messages)

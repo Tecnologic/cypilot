@@ -38,9 +38,9 @@ def test_main_window_shows_the_drive_and_edits_its_registers(qapp: Any, sim: Sim
         assert value is not None
 
         value.setText("12.5")  # as the editor does
-        wait_until(qapp, lambda: "unimoc.motor.limits.i_max = 12.5" in window.statusBar().currentMessage())
+        wait_until(qapp, lambda: window.saw("unimoc.motor.limits.i_max = 12.5"))
         value.setText("5000")
-        wait_until(qapp, lambda: "rejected" in window.statusBar().currentMessage())
+        wait_until(qapp, lambda: window.saw("rejected"))
         assert value.text() == "12.5"
         assert value.foreground().color().name() == "#c62828"
 
@@ -73,10 +73,10 @@ def test_control_enables_stops_all_and_the_watchdog_catches_a_frozen_ui(qapp: An
         )
         window.control.values[1].setValue(1.5)
         window.control.send_button.click()
-        wait_until(qapp, lambda: "current = 0, 1.5" in window.statusBar().currentMessage())
+        wait_until(qapp, lambda: window.saw("current = 0, 1.5"))
 
         window.stop_action.trigger()
-        wait_until(qapp, lambda: "STOP ALL: SLEEP sent to 10" in window.statusBar().currentMessage())
+        wait_until(qapp, lambda: window.saw("STOP ALL: SLEEP sent to 10"))
         wait_until(qapp, lambda: state() == "disabled")
 
         window.control.enable_button.click()
