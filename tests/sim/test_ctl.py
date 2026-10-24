@@ -12,6 +12,7 @@ def test_nodes_shows_the_disabled_drive(ctl: Ctl) -> None:
     nodes = ctl.wait_for(lambda nodes: any(n["node_id"] == DRIVE and n["name"] for n in nodes))
     drive = next(n for n in nodes if n["node_id"] == DRIVE)
     assert drive["name"] == "unimoc"
+    assert drive["unimoc"] is True  # found by its registers, not by the name
     assert drive["health"] == "NOMINAL"
     assert drive["state"] == ["disabled"]
 

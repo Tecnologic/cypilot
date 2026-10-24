@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import pytest
 
-from cypilot.core.status import Chip, Health, PowerStage, VendorStatus, chips, is_unimoc_name
+from cypilot.core.status import Chip, Health, PowerStage, VendorStatus, chips
 
 
 def test_vendor_bits() -> None:
@@ -39,9 +39,3 @@ def test_emergency_stop_of_firmware_without_bit_5() -> None:
 def test_other_nodes_get_no_unimoc_chips() -> None:
     assert chips(online=True, health=Health.CAUTION, vendor_code=0x09, unimoc=False) == []
     assert chips(online=False, health=Health.NOMINAL, vendor_code=0, unimoc=True) == [Chip.OFFLINE]
-
-
-def test_unimoc_names() -> None:
-    assert is_unimoc_name("unimoc")
-    assert is_unimoc_name("org.tecnologic.unimoc.drive")
-    assert not is_unimoc_name("org.opencyphal.yakut")
