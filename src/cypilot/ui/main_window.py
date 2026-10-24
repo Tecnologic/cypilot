@@ -37,7 +37,7 @@ class MainWindow(QMainWindow):
         self.bus.connected.connect(self._on_connected)
         self.bus.disconnected.connect(self._on_disconnected)
 
-        self.nodes = NodeTableModel()
+        self.nodes = NodeTableModel(self)
         self.node_table = QTableView()
         self.node_table.setModel(self.nodes)
         self.node_table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)

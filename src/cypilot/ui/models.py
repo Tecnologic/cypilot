@@ -6,7 +6,7 @@ from __future__ import annotations
 from collections.abc import Sequence
 from typing import Any
 
-from PySide6.QtCore import QAbstractTableModel, QModelIndex, QPersistentModelIndex, Qt
+from PySide6.QtCore import QAbstractTableModel, QModelIndex, QObject, QPersistentModelIndex, Qt
 from PySide6.QtGui import QBrush, QColor, QStandardItem, QStandardItemModel
 
 from cypilot.core.registers import Register
@@ -38,8 +38,8 @@ class NodeTableModel(QAbstractTableModel):
 
     HEADERS = ("ID", "Name", "SW", "Health", "Mode", "Uptime", "State")
 
-    def __init__(self) -> None:
-        super().__init__()
+    def __init__(self, parent: QObject | None = None) -> None:
+        super().__init__(parent)
         self._nodes: list[NodeSummary] = []
 
     def set_nodes(self, nodes: Sequence[NodeSummary]) -> None:
@@ -114,8 +114,8 @@ class RegisterTreeModel(QStandardItemModel):
 
     HEADERS = ("Register", "Value", "Type", "Flags")
 
-    def __init__(self) -> None:
-        super().__init__()
+    def __init__(self, parent: QObject | None = None) -> None:
+        super().__init__(parent)
         self.setHorizontalHeaderLabels(list(self.HEADERS))
         self._leaves: dict[str, QStandardItem] = {}
 

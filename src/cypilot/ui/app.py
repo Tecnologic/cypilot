@@ -41,7 +41,12 @@ def main(argv: Sequence[str] | None = None) -> int:
         except InterfaceError as error:
             print(f"cypilot: {error}", file=sys.stderr)
             return 2
-    return int(app.exec())
+    code = int(app.exec())
+    # Delete the window while the application exists: left to the interpreter's
+    # shutdown, Qt objects can outlive the QApplication and crash the exit.
+    window.deleteLater()
+    app.processEvents()
+    return code
 
 
 if __name__ == "__main__":

@@ -42,7 +42,7 @@ class RegisterPanel(QWidget):
         self._bus = bus
         self._node_id: int | None = None
         self._updating = False
-        self.model = RegisterTreeModel()
+        self.model = RegisterTreeModel(self)
         self._proxy = QSortFilterProxyModel(self)
         self._proxy.setSourceModel(self.model)
         self._proxy.setRecursiveFilteringEnabled(True)
