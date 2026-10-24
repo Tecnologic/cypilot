@@ -10,7 +10,8 @@ emergency stop or a trip, plot across nodes and take triggered scope shots.
 > **Status: pre-alpha.** The core and the CLI `cypilot-ctl` (nodes, registers,
 > commands, capabilities, settings profiles) work against the UNIMOC
 > simulation. The GUI `cypilot` shows the nodes with their state, edits their
-> registers and shows their log; enabling drives, plots and the scope follow.
+> registers, enables and stops drives, recovers them and shows their log;
+> plots and the scope follow.
 > The plan is [docs/plan.md](docs/plan.md).
 
 ## Install
@@ -66,6 +67,9 @@ cypilot-ctl set 10 unimoc.motor.limits.i_max 12.5 # exit code 1 when the node re
 cypilot-ctl command 10 store                      # restart, store, factory-reset, emergency-stop
 cypilot-ctl --json regs 10 > drive10.json
 cypilot-ctl caps 10                               # what the node supports, its ports and their types
+cypilot-ctl run 10 --current 0,2 --for 3          # enable, hold i_q = 2 A for 3 s, ramp down, disable
+cypilot-ctl stop                                  # SLEEP to every drive and zero setpoints, at once
+cypilot-ctl recover 10                            # STANDBY clears a trip; --restart for a latched E-stop
 ```
 
 ### Settings profiles
@@ -103,6 +107,32 @@ to edit it in the register's type. A value the node refuses turns red and
 the node's own value stays; **Store** saves the settings in flash. The **Log**
 tab collects the `uavcan.diagnostic.Record` messages of all nodes. All bus
 work runs in its own thread, so the window stays responsive on a busy bus.
+
+The **Control** tab enables, disables and recovers the selected drive and sends
+its setpoints (the modes the drive subscribes: d/q current, torque, speed,
+position) with a ramp. Enabling publishes `ENGAGED` on the drive's own
+readiness subject (UNIMOC v0.2.0: 1024 + node-ID) 20 times a second; a drive is
+never enabled without a click. Setpoint subjects are shared by default, so a
+setpoint reaches every engaged drive on the same subject.
+
+### Safety
+
+cypilot is no safety device; the hard-wired E-stop loop and the brakes are.
+Within that:
+
+- **STOP ALL (Esc)** works anywhere in the window: `SLEEP` to every drive and
+  zero setpoints at once, no ramp.
+- **Emergency stop (Shift+Esc)**, after a confirmation, sends
+  `EMERGENCY_STOP` to every UNIMOC node; it stays latched until a restart.
+- **Watchdog:** the UI thread confirms every 100 ms that it is alive. After
+  0.3 s without it the bus thread sends `SLEEP` to the engaged drives and stops
+  refreshing their readiness. Closing the window, disconnecting or losing the
+  adapter ends the refresh too; the drive disengages by its own timeout.
+- Enabling is refused, with the reason, while an E-stop or trip is latched,
+  the external enable is missing, the drive is under local control (e-bike), or
+  another node (a VDC) publishes on the drive's readiness subject.
+- **Recover** acknowledges a latched trip with `STANDBY`, or restarts a drive
+  whose emergency stop is latched (after a confirmation).
 
 ## Against the simulation
 
