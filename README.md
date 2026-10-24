@@ -9,8 +9,9 @@ emergency stop or a trip, plot across nodes and take triggered scope shots.
 
 > **Status: pre-alpha.** The core and the CLI `cypilot-ctl` (nodes, registers,
 > commands, capabilities, settings profiles) work against the UNIMOC
-> simulation. The GUI `cypilot` is not
-> written yet. The plan is [docs/plan.md](docs/plan.md).
+> simulation. The GUI `cypilot` shows the nodes with their state, edits their
+> registers and shows their log; enabling drives, plots and the scope follow.
+> The plan is [docs/plan.md](docs/plan.md).
 
 ## Install
 
@@ -18,7 +19,8 @@ Python 3.11 or newer, Linux or Windows.
 
 ```sh
 pip install -e .            # from a clone; adds cypilot-ctl to the path
-pip install -e '.[dev]'     # plus pytest, ruff and mypy
+pip install -e '.[gui]'     # plus the GUI cypilot (PySide6, pyqtgraph)
+pip install -e '.[dev]'     # plus the GUI, pytest, ruff and mypy
 ```
 
 The DSDL is not part of this repository. On the first use cypilot downloads
@@ -86,6 +88,21 @@ cypilot-ctl profile load 11 fl_drive.json --store # write, verify, store in flas
 The state column shows `disabled`, `enabled`, `engaged`, `blocked`
 (external enable missing), `tripped`, `fault`, `E-stop latched`, `settings
 pending` and `local control`, decoded from the heartbeat of UNIMOC nodes.
+
+## GUI
+
+```sh
+cypilot                                           # the Connect dialog lists SocketCAN links and serial ports
+cypilot -i slcan:/dev/pts/1                       # connect at once
+```
+
+The window lists the nodes of the bus with name, version, health, mode,
+uptime and their state (the same state chips as `cypilot-ctl nodes`). Select a
+node to scan its registers into a tree; filter by name, double-click a value
+to edit it in the register's type. A value the node refuses turns red and
+the node's own value stays; **Store** saves the settings in flash. The **Log**
+tab collects the `uavcan.diagnostic.Record` messages of all nodes. All bus
+work runs in its own thread, so the window stays responsive on a busy bus.
 
 ## Against the simulation
 
