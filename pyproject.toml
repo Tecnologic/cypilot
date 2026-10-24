@@ -1,0 +1,71 @@
+[build-system]
+requires = ["hatchling>=1.24"]
+build-backend = "hatchling.build"
+
+[project]
+name = "cypilot"
+version = "0.1.0.dev0"
+description = "Operator GUI and CLI for UNIMOC drives and other Cyphal nodes"
+readme = "README.md"
+license = "Apache-2.0"
+license-files = ["LICENSE"]
+requires-python = ">=3.11"
+authors = [{ name = "Tecnologic" }]
+keywords = ["cyphal", "uavcan", "can", "motor-control", "unimoc"]
+classifiers = [
+    "Development Status :: 2 - Pre-Alpha",
+    "Environment :: Console",
+    "Intended Audience :: Developers",
+    "Operating System :: POSIX :: Linux",
+    "Operating System :: Microsoft :: Windows",
+    "Programming Language :: Python :: 3",
+    "Topic :: Scientific/Engineering",
+]
+dependencies = [
+    "pycyphal[transport-can-pythoncan]~=1.27",
+    "pyserial~=3.5",
+]
+
+[project.optional-dependencies]
+dev = [
+    "mypy~=2.4",
+    "pytest~=9.1",
+    "ruff==0.17.2",
+]
+
+[project.scripts]
+cypilot-ctl = "cypilot.cli:main"
+
+[project.urls]
+Repository = "https://github.com/Tecnologic/cypilot"
+Firmware = "https://github.com/Tecnologic/unimoc"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/cypilot"]
+
+[tool.ruff]
+line-length = 110
+target-version = "py311"
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B", "UP", "SIM", "RUF"]
+
+[tool.mypy]
+python_version = "3.11"
+files = ["src/cypilot"]
+strict = true
+# The DSDL packages (uavcan, reg, unimoc, cymon) are generated at run time.
+ignore_missing_imports = true
+disallow_untyped_calls = false
+warn_return_any = false
+
+[[tool.mypy.overrides]]
+module = ["pycyphal.*", "can.*", "serial.*"]
+ignore_missing_imports = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+markers = [
+    "sim: needs the UNIMOC native_sim binary (Linux), see tests/sim/conftest.py",
+]

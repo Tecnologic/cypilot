@@ -1,0 +1,47 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  lint:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: pip install -e '.[dev]'
+      - run: ruff check .
+      - run: ruff format --check .
+      - run: mypy
+
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, windows-latest]
+        python: ["3.11", "3.13"]
+    runs-on: ${{ matrix.os }}
+    env:
+      # The DSDL download asks the GitHub API for the cymon-lib commit of the UNIMOC release.
+      GITHUB_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+      - run: pip install -e '.[dev]'
+      # The compiled DSDL and the native_sim binary of the pinned UNIMOC release.
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cache/cypilot
+            ~\AppData\Local\cypilot
+          key: cypilot-${{ runner.os }}-py${{ matrix.python }}-${{ hashFiles('src/cypilot/dsdl.py') }}
+      # On Windows the simulation tests skip themselves (native_sim is Linux only).
+      - run: pytest -v
