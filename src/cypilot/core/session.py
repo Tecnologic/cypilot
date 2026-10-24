@@ -15,6 +15,7 @@ from types import TracebackType
 from typing import Any
 
 from cypilot import __version__
+from cypilot.core.capabilities import PortList
 from cypilot.core.registers import RegisterClient, RegisterError
 from cypilot.core.status import Chip, Health, Mode, chips
 from cypilot.core.transport import InterfaceSpec, make_transport
@@ -67,6 +68,7 @@ class Session:
         self._changed = asyncio.Event()
         self._unimoc: dict[int, bool] = {}
         self._probes: dict[int, asyncio.Task[None]] = {}
+        self._port_lists: dict[int, PortList] = {}
 
     async def __aenter__(self) -> Session:
         await self.open()
@@ -82,6 +84,7 @@ class Session:
         import pycyphal.application
         import pycyphal.application.node_tracker
         import uavcan.node
+        import uavcan.node.port
 
         major, minor = (int(part) for part in __version__.split(".")[:2])
         info = uavcan.node.GetInfo_1_0.Response(
@@ -93,6 +96,8 @@ class Session:
         self._node.start()
         self._tracker = pycyphal.application.node_tracker.NodeTracker(self._node)
         self._tracker.add_update_handler(self._on_update)
+        port_list = self._node.make_subscriber(uavcan.node.port.List_1_0)
+        port_list.receive_in_background(self._on_port_list)
 
     async def close(self) -> None:
         for task in self._probes.values():
@@ -116,10 +121,29 @@ class Session:
             for node_id, entry in sorted(self._tracker.registry.items())
         ]
 
+    def port_list(self, node_id: int) -> PortList | None:
+        """The last ``uavcan.node.port.List`` of a node (nodes publish it every 10 s), or None."""
+        return self._port_lists.get(node_id)
+
+    async def wait_port_list(self, node_id: int, timeout: float = 11.0) -> PortList | None:
+        """Waits up to ``timeout`` for the port list of a node; None if none came."""
+        deadline = time.monotonic() + timeout
+        while (found := self._port_lists.get(node_id)) is None and time.monotonic() < deadline:
+            self._changed.clear()
+            with contextlib.suppress(TimeoutError):
+                await asyncio.wait_for(self._changed.wait(), deadline - time.monotonic())
+        return found
+
+    async def _on_port_list(self, message: Any, transfer: Any) -> None:
+        if transfer.source_node_id is not None:
+            self._port_lists[int(transfer.source_node_id)] = _port_list(message)
+            self._changed.set()
+
     def _on_update(self, node_id: int, old: Any, new: Any) -> None:
         """NodeTracker callback: probes a node once its GetInfo arrived, forgets it when it left."""
         if new is None or new.info is None:
             self._unimoc.pop(node_id, None)
+            self._port_lists.pop(node_id, None)
         elif old is None or old.info is None:
             if (task := self._probes.pop(node_id, None)) is not None:
                 task.cancel()
@@ -186,6 +210,22 @@ class Session:
         if result is None:
             raise TimeoutError(f"node {node_id} did not answer ExecuteCommand {command}")
         return int(result[0].status)
+
+
+def _subjects(subject_list: Any) -> frozenset[int]:
+    if subject_list.sparse_list is not None:
+        return frozenset(int(item.value) for item in subject_list.sparse_list)
+    if subject_list.mask is not None:
+        return frozenset(index for index, bit in enumerate(subject_list.mask) if bit)
+    return frozenset()  # "total": every subject, not resolved
+
+
+def _port_list(message: Any) -> PortList:
+    return PortList(
+        publishers=_subjects(message.publishers),
+        subscribers=_subjects(message.subscribers),
+        servers=frozenset(index for index, bit in enumerate(message.servers.mask) if bit),
+    )
 
 
 def _summary(node_id: int, entry: Any, unimoc: bool | None) -> NodeSummary:

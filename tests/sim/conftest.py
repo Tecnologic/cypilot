@@ -63,6 +63,12 @@ class Ctl:
         assert code == 0, out
         return json.loads(out)
 
+    def json_rc(self, expected: int, *args: str) -> Any:
+        """``--json`` output of a command that exits with ``expected`` (1: differences found)."""
+        code, out = self.run("--json", *args)
+        assert code == expected, out
+        return json.loads(out)
+
     def wait_for(self, predicate: Any, timeout: float = 20.0) -> Any:
         """Lists the nodes until ``predicate(nodes)`` holds."""
         deadline = time.monotonic() + timeout

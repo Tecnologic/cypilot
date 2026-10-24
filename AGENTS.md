@@ -10,7 +10,8 @@ in Python on pycyphal. The plan, the decisions and the phases are in
 - `src/cypilot/core/`: the bus side, shared by the CLI and the GUI: transport
   from interface text (`transport.py`), the session with discovery
   (`session.py`), registers (`registers.py`), the heartbeat status
-  (`status.py`). **No Qt import in `core/`.**
+  (`status.py`), capabilities and ports from discovery (`capabilities.py`),
+  settings profiles (`profiles.py`). **No Qt import in `core/`.**
 - `src/cypilot/dsdl.py`: downloads and compiles the DSDL of the pinned UNIMOC
   release (`DEFAULT_UNIMOC_REF`) or a local checkout (`CYPILOT_UNIMOC`).
 - `src/cypilot/simulation.py`: fetches and runs the UNIMOC `native_sim` drive.
