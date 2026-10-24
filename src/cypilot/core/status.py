@@ -15,7 +15,7 @@ Bits  Meaning
 7     local control: the node engages by itself (e-bike)
 ====  ===========================================================
 
-Bits 4 to 7 come with UNIMOC F1 (after v0.1.0). With older firmware they read 0;
+Bits 4 to 7 come with UNIMOC v0.2.0 (F1). With older firmware they read 0;
 the emergency stop is then recognized from the health CAUTION, the only case in
 which a UNIMOC drive reports it.
 """

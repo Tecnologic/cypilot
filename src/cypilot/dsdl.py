@@ -27,7 +27,7 @@ import urllib.request
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 
-DEFAULT_UNIMOC_REF = "v0.1.0"
+DEFAULT_UNIMOC_REF = "v0.2.0"
 """The UNIMOC release cypilot is tested against."""
 
 NAMESPACES = ("uavcan", "reg", "unimoc", "cymon")

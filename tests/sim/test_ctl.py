@@ -27,7 +27,8 @@ def test_register_scan_finds_the_settings(ctl: Ctl) -> None:
     i_max = registers["unimoc.motor.limits.i_max"]
     assert i_max["kind"] == "real32" and i_max["mutable"] and i_max["persistent"]
     assert registers["uavcan.sub.readiness.type"]["value"] == "reg.udral.service.common.Readiness.0.1"
-    assert registers["uavcan.sub.readiness.id"]["value"] == [READINESS_FOLLOWS_NODE_ID]  # subject 1024 + node-ID
+    # The readiness follows the node-ID: subject 1024 + node-ID.
+    assert registers["uavcan.sub.readiness.id"]["value"] == [READINESS_FOLLOWS_NODE_ID]
 
     motor = ctl.json("regs", str(DRIVE), "unimoc.motor.*")
     assert motor and all(r["name"].startswith("unimoc.motor.") for r in motor)
@@ -55,5 +56,9 @@ def test_emergency_stop_is_latched_until_the_restart(ctl: Ctl) -> None:
     assert drive["vendor_code"] & VENDOR_EMERGENCY_STOP  # the bit, not only the health CAUTION
     assert drive["health"] == "CAUTION"
     assert ctl.json("command", str(DRIVE), "restart")["status"] == 0
-    nodes = ctl.wait_for(lambda nodes: any(n["node_id"] == DRIVE and n["state"] == ["disabled"] for n in nodes))
+    nodes = ctl.wait_for(_drive_disabled)
     assert next(n for n in nodes if n["node_id"] == DRIVE)["vendor_code"] == 0
+
+
+def _drive_disabled(nodes: list[dict[str, object]]) -> bool:
+    return any(n["node_id"] == DRIVE and n["state"] == ["disabled"] for n in nodes)
