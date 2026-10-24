@@ -50,6 +50,8 @@ class ControlPanel(QWidget):
         self._bus = bus
         self._node: NodeSummary | None = None
         self._target: DriveTarget | None = None
+        self._target_requested: int | None = None
+        """Node-ID whose ports were requested (once per selection, also after a failure)."""
 
         self.title = QLabel("No node selected")
         self.state = QLabel("-")
@@ -112,12 +114,15 @@ class ControlPanel(QWidget):
         self._node = node
         if changed:
             self._target = None
+            self._target_requested = None
             self.mode.clear()
             self.title.setText(
                 "No node selected" if node is None else f"Node {node.node_id}: {node.name or '?'}"
             )
-            if node is not None and node.is_unimoc:
-                self._load_target(node.node_id)
+        # The UNIMOC probe may answer after the selection: read the ports once it did.
+        if node is not None and node.is_unimoc and self._target_requested != node.node_id:
+            self._target_requested = node.node_id
+            self._load_target(node.node_id)
         self._update()
 
     def _load_target(self, node_id: int) -> None:

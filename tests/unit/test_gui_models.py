@@ -99,3 +99,29 @@ def test_connect_dialog_refuses_an_invalid_interface(qapp: Any) -> None:
     dialog._accept()
     assert dialog.spec is not None and dialog.spec.mtu == 8
     assert isinstance(discover_interfaces(), list)
+
+
+class FakeBus:
+    """Records the jobs a panel submits instead of running them."""
+
+    def __init__(self) -> None:
+        self.jobs: list[Any] = []
+
+    def call(self, job: Any, done: Any = None) -> None:
+        self.jobs.append((job, done))
+
+
+def test_control_panel_loads_the_target_once_the_node_is_known_as_unimoc(qapp: Any) -> None:
+    from dataclasses import replace
+
+    from cypilot.ui.control_panel import ControlPanel
+
+    bus = FakeBus()
+    panel = ControlPanel(bus)  # type: ignore[arg-type]
+    probing = replace(summary(10, 0x00), unimoc=None)  # selected before the UNIMOC probe answered
+    panel.show_node(probing)
+    assert bus.jobs == []
+    panel.show_node(replace(probing, unimoc=True))
+    assert len(bus.jobs) == 1  # the readiness subject is read now
+    panel.show_node(replace(probing, unimoc=True, uptime=3726))
+    assert len(bus.jobs) == 1  # not again while the first read runs
