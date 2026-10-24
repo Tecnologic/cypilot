@@ -8,7 +8,8 @@ edit, compare and store their settings, enable and stop drives, recover from an
 emergency stop or a trip, plot across nodes and take triggered scope shots.
 
 > **Status: pre-alpha.** The core and the CLI `cypilot-ctl` (nodes, registers,
-> commands) work against the UNIMOC simulation. The GUI `cypilot` is not
+> commands, capabilities, settings profiles) work against the UNIMOC
+> simulation. The GUI `cypilot` is not
 > written yet. The plan is [docs/plan.md](docs/plan.md).
 
 ## Install
@@ -62,6 +63,24 @@ cypilot-ctl get 10 unimoc.motor.limits.i_max
 cypilot-ctl set 10 unimoc.motor.limits.i_max 12.5 # exit code 1 when the node rejects it
 cypilot-ctl command 10 store                      # restart, store, factory-reset, emergency-stop
 cypilot-ctl --json regs 10 > drive10.json
+cypilot-ctl caps 10                               # what the node supports, its ports and their types
+```
+
+### Settings profiles
+
+A profile is the set of mutable, persistent registers of a node in a JSON
+file. Loading writes only the differences, repeats writes that the node
+refuses until another setting is in place, reads everything back and stores
+on request. It leaves the port-IDs (`uavcan.*.*.id`), `uavcan.node.id` and the
+role label `uavcan.node.description` alone unless asked
+(`--include-ports`, `--include-identity`), so one drive's settings can be
+copied to the others:
+
+```sh
+cypilot-ctl profile save 10 fl_drive.json
+cypilot-ctl profile diff 11 fl_drive.json         # exit code 1 when they differ
+cypilot-ctl profile load 11 fl_drive.json --dry-run
+cypilot-ctl profile load 11 fl_drive.json --store # write, verify, store in flash
 ```
 
 The state column shows `disabled`, `enabled`, `engaged`, `blocked`

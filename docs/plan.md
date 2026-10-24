@@ -1,6 +1,6 @@
 # cypilot plan
 
-Status (2026-10-24): **G0 done** (section 12), the rest is planned. Moved here
+Status (2026-10-24): **G0 and G1 done** (section 12), the rest is planned. Moved here
 from UNIMOC `docs/gui_plan.md`, which keeps the contract with the firmware
 (sections 5.1, 6, 7.1 and 9 below: register description file, vendor status
 bits, readiness per node, firmware support); changes to those start in UNIMOC.
@@ -486,7 +486,7 @@ CI.
 |---|---|---|---|
 | F1 | unimoc | Vendor status bits, readiness per node (implemented 2026-10-24) | Released with a `unimoc` tag |
 | G0 | cypilot | **Done 2026-10-24:** repository, license, DSDL download, package skeleton, transport factory, `cypilot-ctl nodes`, `regs`, `get`, `set`, `command`, CI against the released `native_sim` | The CLI lists the simulated drive and its registers in CI |
-| G1 | cypilot | Discovery, capabilities, status model, register scan, edit, store, profiles and diff in the core and the CLI | Profile copy between two simulated drives in a test |
+| G1 | cypilot | **Done 2026-10-24:** discovery, capabilities and ports (`cypilot-ctl caps`), status model, register scan, edit, store, profiles with save, diff and load (`cypilot-ctl profile`) | Profile copy between two simulated drives in a test |
 | G2 | cypilot | Qt main window: connection dialog, node table with status chips, register editor, log view | Offscreen smoke test; manual check on Linux, WSL2 and Windows |
 | G3 | cypilot | Control: readiness per node, keep-alive and UI watchdog, enable, disable, stop all, E-stop, setpoint panel, recovery procedures, simulation panel | Engage, trip, recover and E-stop flows pass against the simulation |
 | F2 | unimoc | Register description file (generator, check, release asset), `scripts/sim_cluster.sh`, multi-node simulation | Asset in a release; four drives on `vcan0` |
