@@ -204,10 +204,17 @@ class Controller:
         if target is None:
             return
         if node_id in self._engaged:
-            for (mode, subject), setpoint in self._setpoints.items():
-                if target.setpoints.get(mode) == subject:
-                    self._retarget(setpoint, tuple(0.0 for _ in setpoint.target), ramp)
+            mine = [
+                s for (mode, subject), s in self._setpoints.items() if target.setpoints.get(mode) == subject
+            ]
+            for setpoint in mine:
+                self._retarget(setpoint, tuple(0.0 for _ in setpoint.target), ramp)
             await asyncio.sleep(ramp)
+            # The keep-alive may not have reached zero within the ramp time (timer
+            # granularity); the last setpoint the drive sees before STANDBY is zero.
+            for setpoint in mine:
+                self._retarget(setpoint, setpoint.target, 0.0)
+            await self._publish_setpoints()
         self._engaged.pop(node_id, None)
         self._standby[node_id] = (target, self._clock() + STANDBY_HOLD)
         self._drop_unused_setpoints()
