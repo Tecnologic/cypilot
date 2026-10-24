@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import time
+from collections.abc import Callable
 from dataclasses import dataclass
 from types import TracebackType
 from typing import Any
@@ -29,6 +30,21 @@ NODE_NAME = "org.tecnologic.cypilot"
 UNIMOC_PROBE_REGISTER = "unimoc.settings.pending"
 """A register every UNIMOC drive has. The GetInfo name is a role label the user sets, so a UNIMOC node is
 recognized by this register; its heartbeat then follows the UNIMOC vendor status layout."""
+
+
+@dataclass(frozen=True)
+class LogRecord:
+    """A ``uavcan.diagnostic.Record`` of a node."""
+
+    received: float
+    """Local time of reception (``time.time()``)."""
+    node_id: int | None
+    severity: int
+    """0 trace, 1 debug, 2 info, 3 notice, 4 warning, 5 error, 6 critical, 7 alert."""
+    text: str
+
+
+SEVERITY_NAMES = ("trace", "debug", "info", "notice", "warning", "error", "critical", "alert")
 
 
 @dataclass(frozen=True)
@@ -69,6 +85,7 @@ class Session:
         self._unimoc: dict[int, bool] = {}
         self._probes: dict[int, asyncio.Task[None]] = {}
         self._port_lists: dict[int, PortList] = {}
+        self._record_handlers: list[Callable[[LogRecord], None]] = []
 
     async def __aenter__(self) -> Session:
         await self.open()
@@ -83,6 +100,7 @@ class Session:
         ensure_dsdl()
         import pycyphal.application
         import pycyphal.application.node_tracker
+        import uavcan.diagnostic
         import uavcan.node
         import uavcan.node.port
 
@@ -98,6 +116,8 @@ class Session:
         self._tracker.add_update_handler(self._on_update)
         port_list = self._node.make_subscriber(uavcan.node.port.List_1_0)
         port_list.receive_in_background(self._on_port_list)
+        records = self._node.make_subscriber(uavcan.diagnostic.Record_1_1)
+        records.receive_in_background(self._on_record)
 
     async def close(self) -> None:
         for task in self._probes.values():
@@ -133,6 +153,20 @@ class Session:
             with contextlib.suppress(TimeoutError):
                 await asyncio.wait_for(self._changed.wait(), deadline - time.monotonic())
         return found
+
+    def add_record_handler(self, handler: Callable[[LogRecord], None]) -> None:
+        """Calls ``handler`` (on the bus loop) for every log record of any node."""
+        self._record_handlers.append(handler)
+
+    async def _on_record(self, message: Any, transfer: Any) -> None:
+        record = LogRecord(
+            received=time.time(),
+            node_id=None if transfer.source_node_id is None else int(transfer.source_node_id),
+            severity=int(message.severity.value),
+            text=message.text.tobytes().decode(errors="replace"),
+        )
+        for handler in self._record_handlers:
+            handler(record)
 
     async def _on_port_list(self, message: Any, transfer: Any) -> None:
         if transfer.source_node_id is not None:
