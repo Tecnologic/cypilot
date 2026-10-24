@@ -5,6 +5,7 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 
+from pyqtgraph.util.garbage_collector import GarbageCollector
 from PySide6.QtCore import QItemSelection, Qt, QTimer
 from PySide6.QtGui import QAction, QCloseEvent, QKeySequence
 from PySide6.QtWidgets import (
@@ -31,6 +32,16 @@ from cypilot.ui.plot_panel import PlotPanel
 from cypilot.ui.simulation_panel import SimulationPanel
 
 MESSAGE_HISTORY = 200
+
+
+def collect_garbage_on_the_ui_thread() -> GarbageCollector:
+    """Python's cyclic collector only on a Qt timer of the UI thread (keep the result alive).
+
+    Left automatic, it runs wherever an allocation triggers it: on the bus and
+    CAN threads, or inside a paint of the plots, and freeing Qt objects there
+    crashes the process (seen as a segfault in pyqtgraph's prepareForPaint).
+    """
+    return GarbageCollector(interval=1.0)
 
 
 class MainWindow(QMainWindow):

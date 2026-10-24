@@ -55,7 +55,7 @@ class PlotPanel(QWidget):
         self._subscribers: dict[str, Any] = {}
         self._items: dict[str, QTreeWidgetItem] = {}
         self._curves: dict[tuple[str, str], Any] = {}
-        self._marker_lines: list[Any] = []
+        self._marker_lines: dict[tuple[float, str], Any] = {}
         self._sources: dict[str, Source] = {}
         self._scanned: set[int] = set()
         self._updating = False
@@ -283,11 +283,13 @@ class PlotPanel(QWidget):
         return max((s for s in stamps if s is not None), default=None)
 
     def _draw_markers(self, since: float | None) -> None:
-        for line in self._marker_lines:
-            self.plot.removeItem(line)
-        self._marker_lines = []
-        markers = [m for m in self.recorder.markers if since is None or m[0] >= since][-MAX_MARKERS:]
-        for stamp, text in markers:
+        """Keeps one line per visible marker; lines are only made and removed as markers come and go."""
+        wanted = [m for m in self.recorder.markers if since is None or m[0] >= since][-MAX_MARKERS:]
+        for marker in set(self._marker_lines) - set(wanted):
+            self.plot.removeItem(self._marker_lines.pop(marker))
+        for stamp, text in wanted:
+            if (stamp, text) in self._marker_lines:
+                continue
             line = pg.InfiniteLine(
                 pos=stamp - self._origin,
                 angle=90,
@@ -296,7 +298,7 @@ class PlotPanel(QWidget):
                 labelOpts={"position": 0.95, "color": "#555", "rotateAxis": (1, 0)},
             )
             self.plot.addItem(line)
-            self._marker_lines.append(line)
+            self._marker_lines[(stamp, text)] = line
 
     def _add_fields(self) -> None:
         """Adds the fields of the sources as their messages arrive."""
@@ -372,6 +374,9 @@ class PlotPanel(QWidget):
     def _reset_view(self, recorder: Recorder) -> None:
         for key, name in list(self._curves):
             self._remove_curve(key, name)
+        for line in self._marker_lines.values():  # placed on the old time origin
+            self.plot.removeItem(line)
+        self._marker_lines.clear()
         self._updating = True
         self.tree.clear()
         self._updating = False

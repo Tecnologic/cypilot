@@ -36,7 +36,12 @@ def qapp() -> Iterator[Any]:
     os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
     widgets = pytest.importorskip("PySide6.QtWidgets")
     app = widgets.QApplication.instance() or widgets.QApplication([])
+    from cypilot.ui.main_window import collect_garbage_on_the_ui_thread
+
+    collector = collect_garbage_on_the_ui_thread()  # as the application does
     yield app
+    collector.timer.stop()
+    gc.enable()
     for widget in app.topLevelWidgets():
         widget.close()
         widget.deleteLater()

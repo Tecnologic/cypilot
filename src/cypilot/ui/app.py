@@ -30,9 +30,10 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     from PySide6.QtWidgets import QApplication
 
-    from cypilot.ui.main_window import MainWindow
+    from cypilot.ui.main_window import MainWindow, collect_garbage_on_the_ui_thread
 
     app = QApplication.instance() or QApplication(sys.argv[:1])
+    collector = collect_garbage_on_the_ui_thread()
     window = MainWindow()
     window.show()
     if args.interface:
@@ -46,6 +47,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     # shutdown, Qt objects can outlive the QApplication and crash the exit.
     window.deleteLater()
     app.processEvents()
+    collector.timer.stop()
     return code
 
 
