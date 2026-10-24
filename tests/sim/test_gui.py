@@ -116,3 +116,42 @@ def test_simulation_tab_builds_the_plant_inputs_and_steps_the_clock(qapp: Any, s
         wait_until(qapp, lambda: panel.clock.text().startswith("running"))
     finally:
         window.close()
+
+
+def test_plot_records_the_telemetry_exports_and_replays(qapp: Any, sim: SimInstance, tmp_path: Path) -> None:
+    window = MainWindow()
+    window.show()
+    key = f"{DRIVE}/telemetry"
+    try:
+        window.connect_to(parse_interface(sim.slcan_interfaces[0]), 127)
+        wait_until(qapp, lambda: window.nodes.row_of(DRIVE) is not None, timeout=30)
+        window.node_table.selectRow(window.nodes.row_of(DRIVE) or 0)
+        window.tabs.setCurrentWidget(window.plot)
+        wait_until(qapp, lambda: window.plot.source_item(key) is not None)
+
+        source = window.plot.source_item(key)
+        assert source is not None
+        source.setCheckState(0, Qt.CheckState.Checked)  # as a click does
+        wait_until(qapp, lambda: window.plot.field_item(key, "control_cycles") is not None)
+        assert window.plot.subscribed == [key]
+        field = window.plot.field_item(key, "control_cycles")
+        assert field is not None
+        field.setCheckState(0, Qt.CheckState.Checked)
+        wait_until(qapp, lambda: len(window.plot.curve_data(key, "control_cycles")[0]) >= 5)
+        window.plot.mark("a marker")
+
+        window.plot.export(tmp_path)
+        assert (tmp_path / "node10_telemetry.csv").is_file()
+        window.plot.load(tmp_path)
+        assert window.plot.state.text() == "replay"
+        assert "a marker" in [text for _, text in window.plot.recorder.markers]
+        replayed = window.plot.field_item(key, "control_cycles")
+        assert replayed is not None
+        replayed.setCheckState(0, Qt.CheckState.Checked)
+        assert len(window.plot.curve_data(key, "control_cycles")[0]) >= 5
+
+        window.plot.show_live()
+        wait_until(qapp, lambda: window.plot.field_item(key, "control_cycles") is not None)
+        assert window.plot.state.text().startswith("live, 1 source")
+    finally:
+        window.close()

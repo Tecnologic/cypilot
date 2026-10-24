@@ -10,8 +10,9 @@ emergency stop or a trip, plot across nodes and take triggered scope shots.
 > **Status: pre-alpha.** The core and the CLI `cypilot-ctl` (nodes, registers,
 > commands, capabilities, settings profiles) work against the UNIMOC
 > simulation. The GUI `cypilot` shows the nodes with their state, edits their
-> registers, enables and stops drives, recovers them and shows their log;
-> plots and the scope follow.
+> registers, enables and stops drives, recovers them, plots the subjects of
+> several nodes on one time axis, records and replays them, and shows their
+> log; the scope follows.
 > The plan is [docs/plan.md](docs/plan.md).
 
 ## Install
@@ -72,6 +73,7 @@ cypilot-ctl stop                                  # SLEEP to every drive and zer
 cypilot-ctl recover 10                            # STANDBY clears a trip; --restart for a latched E-stop
 cypilot-ctl sim 10 pause                          # simulated drive: status, pause, run, advance N, reset
 cypilot-ctl sim 10 advance 16000                  # one second of virtual time, as fast as it runs
+cypilot-ctl record 10 telemetry --for 5 --out rec # subjects of node 10 into rec/*.csv and recording.json
 ```
 
 ### Settings profiles
