@@ -3,8 +3,10 @@
 
 from __future__ import annotations
 
+import gc
 import logging
 import os
+from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
 
@@ -23,8 +25,21 @@ def dsdl() -> Path:
 
 
 @pytest.fixture(scope="session")
-def qapp() -> Any:
-    """The QApplication of the GUI tests, on the offscreen platform unless another one is set."""
+def qapp() -> Iterator[Any]:
+    """The QApplication of the GUI tests, on the offscreen platform unless another one is set.
+
+    At the end it deletes every top-level widget while the application still
+    exists: widgets left to the interpreter's shutdown can outlive the
+    QApplication, which ended a Windows test run with exit code 1 after all
+    tests had passed.
+    """
     os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
     widgets = pytest.importorskip("PySide6.QtWidgets")
-    return widgets.QApplication.instance() or widgets.QApplication([])
+    app = widgets.QApplication.instance() or widgets.QApplication([])
+    yield app
+    for widget in app.topLevelWidgets():
+        widget.close()
+        widget.deleteLater()
+    app.processEvents()
+    gc.collect()
+    app.processEvents()
