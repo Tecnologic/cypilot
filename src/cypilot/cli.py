@@ -31,6 +31,7 @@ from cypilot.core.control import (
 from cypilot.core.profiles import Profile, ProfileError
 from cypilot.core.registers import Register, RegisterError, parse_like
 from cypilot.core.session import DEFAULT_LOCAL_NODE_ID, NodeSummary, Session
+from cypilot.core.signals import Recorder, SignalError, sources, subscribe
 from cypilot.core.sim_control import SimControl, SimStatus, SimulationError
 from cypilot.core.transport import InterfaceError, parse_interface
 from cypilot.dsdl import DsdlError, DsdlSource, ensure_dsdl
@@ -70,6 +71,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         ProfileError,
         ControlError,
         SimulationError,
+        SignalError,
         RegisterError,
         TimeoutError,
         ValueError,
@@ -181,6 +183,13 @@ def _parser() -> argparse.ArgumentParser:
     rescue.add_argument("node", type=int)
     rescue.add_argument("--restart", action="store_true", help="allow the restart a latched E-stop needs")
     rescue.set_defaults(handler=_cmd_recover)
+
+    record = commands.add_parser("record", help="record published subjects of a node into CSV files")
+    record.add_argument("node", type=int)
+    record.add_argument("ports", nargs="*", help="port names, e.g. telemetry (default: all with a type)")
+    record.add_argument("--for", dest="duration", type=float, default=2.0, help="seconds (default 2)")
+    record.add_argument("--out", type=Path, required=True, help="directory for the CSV files")
+    record.set_defaults(handler=_cmd_record)
 
     sim = commands.add_parser("sim", help="pause, run, advance or reset a simulated UNIMOC drive")
     sim.add_argument("node", type=int)
@@ -543,6 +552,33 @@ def _cmd_recover(args: argparse.Namespace) -> int:
     result = asyncio.run(run())
     _print(args, {"steps": result.steps, "ready": result.ready}, "\n".join(result.steps))
     return 0 if result.ready else 1
+
+
+def _cmd_record(args: argparse.Namespace) -> int:
+    async def run() -> Recorder:
+        async with _session(args) as session:
+            _, registers = await _scan(session, args.node)
+            found = sources(registers, args.node)
+            if args.ports:
+                unknown = set(args.ports) - {s.port for s in found}
+                if unknown:
+                    raise SignalError(f"node {args.node} publishes no decodable {', '.join(sorted(unknown))}")
+                found = [s for s in found if s.port in args.ports]
+            recorder = Recorder()
+            subscribers = [subscribe(session.node, source, recorder) for source in found]
+            try:
+                await asyncio.sleep(args.duration)
+            finally:
+                for subscriber in subscribers:
+                    subscriber.close()
+            return recorder
+
+    recorder = asyncio.run(run())
+    recorder.export(args.out)
+    counts = {key: recorder.count(key) for key in recorder.source_keys()}
+    lines = [f"{key}: {count} samples" for key, count in counts.items()] or ["nothing received"]
+    _print(args, {"out": str(args.out), "samples": counts}, "\n".join(lines))
+    return 0
 
 
 def _cmd_sim(args: argparse.Namespace) -> int:

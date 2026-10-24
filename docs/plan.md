@@ -1,6 +1,6 @@
 # cypilot plan
 
-Status (2026-10-24): **G0 to G3 done** (section 12), the rest is planned. Moved here
+Status (2026-10-24): **G0 to G3 done, G4 in part** (section 12), the rest is planned. Moved here
 from UNIMOC `docs/gui_plan.md`, which keeps the contract with the firmware
 (sections 5.1, 6, 7.1 and 9 below: register description file, vendor status
 bits, readiness per node, firmware support); changes to those start in UNIMOC.
@@ -490,7 +490,7 @@ CI.
 | G2 | cypilot | **Done 2026-10-24 (offscreen tested; manual check on Linux, WSL2 and Windows open):** Qt main window: connection dialog, node table with status chips, register editor, log view | Offscreen smoke test; manual check on Linux, WSL2 and Windows |
 | G3 | cypilot | **Done 2026-10-24:** control: readiness per node, keep-alive and UI watchdog, enable, disable, stop all, E-stop, setpoint panel, recovery procedures (`core.control`, the Control tab, `cypilot-ctl run/stop/recover`), simulation panel (`core.sim_control`, the Simulation tab, `cypilot-ctl sim`); open: step and square-wave setpoints | Engage, trip, recover and E-stop flows pass against the simulation |
 | F2 | unimoc | Register description file (generator, check, release asset), `scripts/sim_cluster.sh`, multi-node simulation | Asset in a release; four drives on `vcan0` |
-| G4 | cypilot | Live plots across nodes, recorder, CSV/JSON export and replay; description file in the editor | Plot of four nodes from the cluster |
+| G4 | cypilot | **In part 2026-10-24:** live plots across nodes, recorder with markers, CSV/JSON export and replay (`core.signals`, the Plot tab, `cypilot-ctl record`); open: own Y axes and cursor, register snapshot in the export, raising `unimoc.telemetry.rate` for a session, description file in the editor (F2) | Plot of four nodes from the cluster |
 | C1 | cymon | Capture client as an importable API, released | GUI pins it |
 | G5 | cypilot | Scope on the cymon client: multi-node capture with the shared trigger, export | Capture of two simulated drives on one trigger, delay measured |
 | G6 | cypilot | Profiles for the cart (wheel panel, cart sketch), the e-bike (after PR #29), the VDC and the BMS as they appear | Per node type |

@@ -1,10 +1,11 @@
 # SPDX-License-Identifier: Apache-2.0
-"""The main window: nodes with their state, registers, control and log; stop all is always reachable."""
+"""The main window: nodes and their state, registers, control, plots, log; stop all always reachable."""
 
 from __future__ import annotations
 
 from collections.abc import Sequence
 
+from pyqtgraph.util.garbage_collector import GarbageCollector
 from PySide6.QtCore import QItemSelection, Qt, QTimer
 from PySide6.QtGui import QAction, QCloseEvent, QKeySequence
 from PySide6.QtWidgets import (
@@ -27,9 +28,20 @@ from cypilot.ui.connect_dialog import ConnectDialog
 from cypilot.ui.control_panel import ControlPanel
 from cypilot.ui.models import NodeTableModel
 from cypilot.ui.panels import LogPanel, RegisterPanel
+from cypilot.ui.plot_panel import PlotPanel
 from cypilot.ui.simulation_panel import SimulationPanel
 
 MESSAGE_HISTORY = 200
+
+
+def collect_garbage_on_the_ui_thread() -> GarbageCollector:
+    """Python's cyclic collector only on a Qt timer of the UI thread (keep the result alive).
+
+    Left automatic, it runs wherever an allocation triggers it: on the bus and
+    CAN threads, or inside a paint of the plots, and freeing Qt objects there
+    crashes the process (seen as a segfault in pyqtgraph's prepareForPaint).
+    """
+    return GarbageCollector(interval=1.0)
 
 
 class MainWindow(QMainWindow):
@@ -59,11 +71,14 @@ class MainWindow(QMainWindow):
         self.control.message.connect(self._status)
         self.simulation = SimulationPanel(self.bus)
         self.simulation.message.connect(self._status)
+        self.plot = PlotPanel(self.bus)
+        self.plot.message.connect(self._plot_status)
         self.log = LogPanel()
         self.tabs = QTabWidget()
         self.tabs.addTab(self.registers, "Registers")
         self.tabs.addTab(self.control, "Control")
         self.tabs.addTab(self.simulation, "Simulation")
+        self.tabs.addTab(self.plot, "Plot")
         self.tabs.addTab(self.log, "Log")
         self.tabs.currentChanged.connect(lambda _: self.simulation.refresh())
         splitter = QSplitter(Qt.Orientation.Horizontal)
@@ -161,6 +176,8 @@ class MainWindow(QMainWindow):
         self.bus.connect_to(spec, local_node_id)
 
     def closeEvent(self, event: QCloseEvent) -> None:
+        for timer in (self.plot.timer, self.simulation.timer):
+            timer.stop()
         self.bus.shutdown()
         super().closeEvent(event)
 
@@ -179,6 +196,7 @@ class MainWindow(QMainWindow):
         self.registers.show_node(None)
         self.control.show_node(None)
         self.simulation.show_node(None)
+        self.plot.disconnected()
         self._status(f"connection failed: {reason}" if reason else "disconnected")
 
     def _on_nodes(self, nodes: Sequence[NodeSummary]) -> None:
@@ -206,11 +224,17 @@ class MainWindow(QMainWindow):
             self.registers.show_node(node.node_id, node.name)
             self.control.show_node(node)
             self.simulation.show_node(node)
+            self.plot.show_node(node.node_id)
 
-    def _status(self, text: str) -> None:
+    def _status(self, text: str, *, mark: bool = True) -> None:
         self.statusBar().showMessage(text)
+        if mark and self.bus.is_connected:
+            self.plot.mark(text)  # commands and register writes on the time axis of the plots
         self.messages.append(text)
         del self.messages[:-MESSAGE_HISTORY]
+
+    def _plot_status(self, text: str) -> None:
+        self._status(text, mark=False)  # the plot's own messages are no markers
 
     def saw(self, text: str) -> bool:
         """True if a status message containing ``text`` was shown (one may follow another at once)."""
