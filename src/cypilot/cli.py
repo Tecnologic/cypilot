@@ -263,6 +263,7 @@ def _node_json(node: NodeSummary) -> dict[str, Any]:
         "software_version": list(node.software_version) if node.software_version else None,
         "vcs_revision": f"{node.vcs_revision:x}" if node.vcs_revision is not None else None,
         "unique_id": node.unique_id.hex() if node.unique_id is not None else None,
+        "unimoc": node.unimoc,
         "state": [chip.value for chip in node.chips],
     }
 

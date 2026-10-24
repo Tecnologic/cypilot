@@ -84,7 +84,7 @@ The firmware stays GPL-3.0-or-later. For cypilot: **Apache-2.0**.
 | UNIMOC | cypilot |
 |---|---|
 | DSDL namespace `dsdl/unimoc/` (cymon DSDL from cymon-lib) | No copy: `cypilot.dsdl` downloads the namespaces of the pinned UNIMOC release at run time (unimoc, cymon at the release's submodule commit, the public types at its `west.yml` revision) and compiles them into the user cache |
-| Registers, port defaults, vendor status bits, GetInfo names | Discovery, capabilities, the status model |
+| Registers, port defaults, vendor status bits | Discovery, capabilities, the status model |
 | Register description file: schema, generator, serving it | Reader of the file, editor hints |
 | `native_sim` and its release artifact, `scripts/sim_cluster.sh` | Integration tests against the released `native_sim` |
 | Its own pycyphal tests (`tests/integration/cyphal_sim`) for the firmware | GUI and CLI tests |
@@ -268,20 +268,22 @@ loop is open), **Tripped**, **Fault**, **E-stop latched**, **Limp-home**,
 Decided 2026-10-23: every drive has its **own readiness subject**, so the GUI
 (and the VDC) can enable each drive alone.
 
-- **Default:** `uavcan.sub.readiness.id` follows the node-ID,
-  `kSubReadinessBase + node-ID` (proposed base 1024: 1024 to 1151 for the CAN
-  node-IDs 0 to 127, clear of the IDs in use today), as long as the register
-  was not written. Reading the register gives the effective ID. Writing an ID
-  fixes it; a factory reset returns to "follows the node-ID". A node-ID change
-  moves the readiness subject with it after the restart, like every port.
-- **Collision check:** the existing check of the port registers includes the
-  derived ID.
+Implemented in UNIMOC (F1, 2026-10-24; its README, "Readiness per drive and
+the heartbeat status"):
+
+- **Default:** `uavcan.sub.readiness.id` is 65534, "follows the node-ID": the
+  drive subscribes 1024 + node-ID (1034 for node 10). Writing an ID fixes it,
+  writing 65534 or a factory reset returns to the node-ID.
+- **The register keeps the written value (65534), not the effective ID**
+  (changed from the first proposal), so a profile copied to another drive
+  carries no fixed subject. cypilot computes the subject as 1024 +
+  `uavcan.node.id` for 65534, else takes the value; 65535 means disabled.
+- **Collision check:** UNIMOC includes the subject of the node-ID.
+- Drives with settings saved before F1 keep subject 106 until a factory reset.
 - **GUI:** "Enable" publishes `ENGAGED` on the subject of each selected drive,
   "Enable all" on all of them; readiness costs one frame per drive and period
   (about 4 frames at 20 Hz for four drives).
-- **Cart:** the VDC arms each drive on its subject. The README, the system
-  plan (section 6.2) and `sim_client.py` (`PORT_READINESS = 106`) change with
-  it.
+- **Cart:** the VDC arms each drive on its subject.
 - **Setpoints** stay on shared subjects: only an engaged drive applies them,
   so per-node readiness already allows "this drive runs, the others are off".
   Different setpoints for several engaged drives at once (not the cart, which
@@ -408,13 +410,12 @@ the GUI unless cymon wants it too.
 
 Each its own PR with ztest and pytest coverage:
 
-1. **Vendor status bits 4 to 7** (section 6). README, "Commands".
-2. **Readiness per node** (section 7.1): derived default, register reads the
-   effective ID, collision check, README, system plan section 6.2,
-   `tests/integration/cyphal_sim`.
-3. **GetInfo name convention** per application: `org.tecnologic.unimoc.drive`,
-   `.vdc`, `.bms`, `.ebike`, `.sim` suffix for the simulation. Shown in the
-   GUI; the capabilities still come from discovery.
+1. Done (F1): **vendor status bits 4 to 7** (section 6).
+2. Done (F1): **readiness per node** (section 7.1).
+3. Dropped (2026-10-24): a **GetInfo name convention**. The GetInfo name is
+   the `uavcan.node.description` register, a role label the user sets, so it
+   cannot also be a product name. cypilot recognizes a UNIMOC node by its
+   register `unimoc.settings.pending` (`core.session`) instead.
 4. **`.type` registers** for every port of every application (the drive has
    them), so the GUI can decode every subject.
 5. **Register description file** (section 5.1): metadata next to the
@@ -483,7 +484,7 @@ CI.
 
 | Phase | Repository | Content | Done when |
 |---|---|---|---|
-| F1 | unimoc | Vendor status bits, readiness per node, GetInfo names | Released with a `unimoc` tag |
+| F1 | unimoc | Vendor status bits, readiness per node (implemented 2026-10-24) | Released with a `unimoc` tag |
 | G0 | cypilot | **Done 2026-10-24:** repository, license, DSDL download, package skeleton, transport factory, `cypilot-ctl nodes`, `regs`, `get`, `set`, `command`, CI against the released `native_sim` | The CLI lists the simulated drive and its registers in CI |
 | G1 | cypilot | Discovery, capabilities, status model, register scan, edit, store, profiles and diff in the core and the CLI | Profile copy between two simulated drives in a test |
 | G2 | cypilot | Qt main window: connection dialog, node table with status chips, register editor, log view | Offscreen smoke test; manual check on Linux, WSL2 and Windows |

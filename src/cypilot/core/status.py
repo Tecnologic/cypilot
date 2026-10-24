@@ -15,7 +15,7 @@ Bits  Meaning
 7     local control: the node engages by itself (e-bike)
 ====  ===========================================================
 
-Bits 4 to 7 are new with UNIMOC after v0.1.0. With older firmware they read 0;
+Bits 4 to 7 come with UNIMOC F1 (after v0.1.0). With older firmware they read 0;
 the emergency stop is then recognized from the health CAUTION, the only case in
 which a UNIMOC drive reports it.
 """
@@ -87,11 +87,6 @@ class VendorStatus:
             settings_pending=bool(code & 0x40),
             local_control=bool(code & 0x80),
         )
-
-
-def is_unimoc_name(name: str) -> bool:
-    """True for the GetInfo names of UNIMOC applications."""
-    return "unimoc" in name.lower()
 
 
 def chips(*, online: bool, health: Health, vendor_code: int, unimoc: bool) -> list[Chip]:
