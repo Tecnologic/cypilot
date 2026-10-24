@@ -7,6 +7,7 @@ import argparse
 import asyncio
 import fnmatch
 import json
+import logging
 import os
 import sys
 from collections.abc import Sequence
@@ -18,6 +19,15 @@ import pycyphal.transport
 from cypilot import __version__
 from cypilot.core import profiles
 from cypilot.core.capabilities import Port, capabilities, ports
+from cypilot.core.control import (
+    STANDBY_HOLD,
+    ControlError,
+    Controller,
+    DriveTarget,
+    SetpointMode,
+    find_target,
+    recover,
+)
 from cypilot.core.profiles import Profile, ProfileError
 from cypilot.core.registers import Register, RegisterError, parse_like
 from cypilot.core.session import DEFAULT_LOCAL_NODE_ID, NodeSummary, Session
@@ -46,6 +56,10 @@ COMMAND_STATUS = {
 def main(argv: Sequence[str] | None = None) -> int:
     parser = _parser()
     args = parser.parse_args(argv)
+    # The media threads of python-can log every serial error with a traceback;
+    # cypilot-ctl reports the failure of the command instead.
+    for name in ("pycyphal", "can"):
+        logging.getLogger(name).setLevel(logging.CRITICAL)
     try:
         result: int = args.handler(args)
         return result
@@ -53,6 +67,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         InterfaceError,
         DsdlError,
         ProfileError,
+        ControlError,
         RegisterError,
         TimeoutError,
         ValueError,
@@ -144,9 +159,40 @@ def _parser() -> argparse.ArgumentParser:
     load.add_argument("--store", action="store_true", help="store the settings in flash when all were taken")
     load.set_defaults(handler=_cmd_profile_load)
 
+    run = commands.add_parser(
+        "run", help="enable a drive, hold a setpoint for a time, then disable it (Ctrl+C stops it at once)"
+    )
+    run.add_argument("node", type=int)
+    setpoint = run.add_mutually_exclusive_group()
+    setpoint.add_argument("--current", type=_floats(2), metavar="I_D,I_Q", help="d/q current [A]")
+    setpoint.add_argument("--torque", type=_floats(1), metavar="NM", help="torque [N m]")
+    setpoint.add_argument("--speed", type=_floats(1), metavar="RAD_S", help="mechanical speed [rad/s]")
+    run.add_argument("--for", dest="duration", type=float, default=2.0, help="seconds to hold (default 2)")
+    run.add_argument("--ramp", type=float, default=0.5, help="seconds to ramp up and down (default 0.5)")
+    run.set_defaults(handler=_cmd_run)
+
+    stop = commands.add_parser("stop", help="SLEEP to every drive on the bus and zero setpoints, at once")
+    stop.add_argument("--wait", type=float, default=1.5, help="seconds to listen for drives (default 1.5)")
+    stop.set_defaults(handler=_cmd_stop)
+
+    rescue = commands.add_parser("recover", help="clear a trip (STANDBY) or an emergency stop (--restart)")
+    rescue.add_argument("node", type=int)
+    rescue.add_argument("--restart", action="store_true", help="allow the restart a latched E-stop needs")
+    rescue.set_defaults(handler=_cmd_recover)
+
     dsdl = commands.add_parser("dsdl", help="download and compile the DSDL now, print where it is")
     dsdl.set_defaults(handler=_cmd_dsdl)
     return parser
+
+
+def _floats(count: int) -> Any:
+    def parse(text: str) -> tuple[float, ...]:
+        values = tuple(float(item) for item in text.split(","))
+        if len(values) != count:
+            raise argparse.ArgumentTypeError(f"expected {count} comma-separated value(s)")
+        return values
+
+    return parse
 
 
 def _bitrate(text: str) -> tuple[int, int]:
@@ -404,6 +450,91 @@ def _cmd_profile_load(args: argparse.Namespace) -> int:
     _print(args, data, "\n".join(lines))
     ok = not data["rejected"] and not data["incompatible"] and not data["still_different"]
     return 0 if ok and data["store_status"] in (None, 0) else 1
+
+
+def _cmd_run(args: argparse.Namespace) -> int:
+    chosen = [
+        (mode, values)
+        for mode, values in (
+            (SetpointMode.CURRENT, args.current),
+            (SetpointMode.TORQUE, args.torque),
+            (SetpointMode.SPEED, args.speed),
+        )
+        if values is not None
+    ]
+
+    async def run() -> dict[str, Any]:
+        async with _session(args) as session:
+            await session.wait_for_node(args.node)
+            target = await find_target(session, args.node)
+            controller = Controller(session)
+            feeder = asyncio.get_running_loop().create_task(_feed(controller))  # this process is the owner
+            try:
+                await controller.engage(target)
+                await controller.wait_engaged(args.node)
+                for mode, values in chosen:
+                    controller.set_setpoint(target, mode, values, ramp=args.ramp)
+                await asyncio.sleep(args.duration)
+                await controller.disengage(args.node, ramp=args.ramp)
+                await asyncio.sleep(STANDBY_HOLD)
+                node = next(n for n in session.nodes() if n.node_id == args.node)
+                return {
+                    "node": args.node,
+                    "readiness": target.readiness,
+                    "state": [c.value for c in node.chips],
+                }
+            finally:
+                feeder.cancel()
+                await controller.close()
+
+    data = asyncio.run(run())
+    _print(
+        args,
+        data,
+        f"node {data['node']} ran on readiness {data['readiness']}; now: {', '.join(data['state'])}",
+    )
+    return 0
+
+
+async def _feed(controller: Controller) -> None:
+    while True:
+        controller.feed()
+        await asyncio.sleep(0.05)
+
+
+def _cmd_stop(args: argparse.Namespace) -> int:
+    async def run() -> list[int]:
+        async with _session(args) as session:
+            targets: list[DriveTarget] = []
+            for node in await session.discover(args.wait):
+                if node.is_unimoc:
+                    try:
+                        targets.append(await find_target(session, node.node_id))
+                    except (ControlError, RegisterError):
+                        continue
+            controller = Controller(session)
+            await controller.stop_all(targets)
+            await controller.close()
+            return [t.node_id for t in targets]
+
+    stopped = asyncio.run(run())
+    _print(args, {"sleep_sent_to": stopped}, "SLEEP sent to " + (", ".join(map(str, stopped)) or "no drive"))
+    return 0
+
+
+def _cmd_recover(args: argparse.Namespace) -> int:
+    async def run() -> Any:
+        async with _session(args) as session:
+            await session.wait_for_node(args.node)
+            controller = Controller(session)
+            try:
+                return await recover(session, controller, args.node, allow_restart=args.restart)
+            finally:
+                await controller.close()
+
+    result = asyncio.run(run())
+    _print(args, {"steps": result.steps, "ready": result.ready}, "\n".join(result.steps))
+    return 0 if result.ready else 1
 
 
 def _cmd_dsdl(args: argparse.Namespace) -> int:

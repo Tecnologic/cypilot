@@ -18,6 +18,7 @@ from typing import Any, TypeVar
 
 from PySide6.QtCore import QObject, Qt, Signal, Slot
 
+from cypilot.core.control import Controller, DriveTarget, find_target
 from cypilot.core.session import LogRecord, NodeSummary, Session
 from cypilot.core.transport import InterfaceSpec
 
@@ -47,6 +48,7 @@ class Bus(QObject):
         self._thread = threading.Thread(target=self._run_loop, name="cypilot bus", daemon=True)
         self._thread.start()
         self._session: Session | None = None
+        self._controller: Controller | None = None
         self._snapshots: asyncio.Task[None] | None = None
         self._deliver.connect(self._on_deliver, Qt.ConnectionType.QueuedConnection)
 
@@ -71,6 +73,45 @@ class Bus(QObject):
         if self._session is None:
             raise ConnectionError("not connected")
         return await job(self._session)
+
+    def control(
+        self,
+        job: Callable[[Session, Controller], Awaitable[T]],
+        done: Callable[[T | BaseException], None] | None = None,
+    ) -> Future[T]:
+        """Like :meth:`call`, with the session's :class:`Controller` (readiness, setpoints, stop)."""
+
+        async def with_controller(session: Session) -> T:
+            if self._controller is None:
+                raise ConnectionError("not connected")
+            return await job(session, self._controller)
+
+        return self.call(with_controller, done)
+
+    def feed(self) -> None:
+        """The UI thread is alive (the watchdog of the readiness keep-alive); call every 100 ms."""
+        controller = self._controller
+        if controller is not None:
+            controller.feed()
+
+    def stop_all(self, done: Callable[[list[int] | BaseException], None] | None = None) -> None:
+        """SLEEP on every readiness subject cypilot knows at once, then on every other drive it finds."""
+
+        async def stop(session: Session, controller: Controller) -> list[int]:
+            await controller.stop_all()
+            stopped = set(controller.known)
+            others: list[DriveTarget] = []
+            for node in session.nodes():
+                if node.is_unimoc and node.node_id not in stopped:
+                    try:
+                        others.append(await find_target(session, node.node_id))
+                    except Exception:  # a node that does not answer must not end the stop
+                        continue
+            if others:
+                await controller.stop_all(others)
+            return sorted(stopped | {t.node_id for t in others})
+
+        self.control(stop, done)
 
     # --- Connection ----------------------------------------------------------
 
@@ -110,6 +151,7 @@ class Bus(QObject):
             return
         session.add_record_handler(self._on_record)
         self._session = session
+        self._controller = Controller(session)
         self._snapshots = asyncio.get_running_loop().create_task(self._publish_snapshots(session))
         self.connected.emit(interface.text)
 
@@ -117,6 +159,9 @@ class Bus(QObject):
         if self._snapshots is not None:
             self._snapshots.cancel()
             self._snapshots = None
+        if self._controller is not None:
+            controller, self._controller = self._controller, None
+            await controller.close()  # SLEEP to every engaged drive
         if self._session is not None:
             session, self._session = self._session, None
             await session.close()
