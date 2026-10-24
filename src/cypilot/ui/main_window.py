@@ -27,6 +27,9 @@ from cypilot.ui.connect_dialog import ConnectDialog
 from cypilot.ui.control_panel import ControlPanel
 from cypilot.ui.models import NodeTableModel
 from cypilot.ui.panels import LogPanel, RegisterPanel
+from cypilot.ui.simulation_panel import SimulationPanel
+
+MESSAGE_HISTORY = 200
 
 
 class MainWindow(QMainWindow):
@@ -54,11 +57,15 @@ class MainWindow(QMainWindow):
         self.registers.message.connect(self._status)
         self.control = ControlPanel(self.bus)
         self.control.message.connect(self._status)
+        self.simulation = SimulationPanel(self.bus)
+        self.simulation.message.connect(self._status)
         self.log = LogPanel()
         self.tabs = QTabWidget()
         self.tabs.addTab(self.registers, "Registers")
         self.tabs.addTab(self.control, "Control")
+        self.tabs.addTab(self.simulation, "Simulation")
         self.tabs.addTab(self.log, "Log")
+        self.tabs.currentChanged.connect(lambda _: self.simulation.refresh())
         splitter = QSplitter(Qt.Orientation.Horizontal)
         splitter.addWidget(self.node_table)
         splitter.addWidget(self.tabs)
@@ -103,6 +110,8 @@ class MainWindow(QMainWindow):
         self.feed_timer.start()
         self._selected: int | None = None
         self._nodes: list[NodeSummary] = []
+        self.messages: list[str] = []
+        """The last status messages, oldest first."""
         self._status("not connected")
 
     def stop_all(self) -> None:
@@ -169,6 +178,7 @@ class MainWindow(QMainWindow):
         self._nodes = []
         self.registers.show_node(None)
         self.control.show_node(None)
+        self.simulation.show_node(None)
         self._status(f"connection failed: {reason}" if reason else "disconnected")
 
     def _on_nodes(self, nodes: Sequence[NodeSummary]) -> None:
@@ -195,6 +205,13 @@ class MainWindow(QMainWindow):
             self._selected = node.node_id
             self.registers.show_node(node.node_id, node.name)
             self.control.show_node(node)
+            self.simulation.show_node(node)
 
     def _status(self, text: str) -> None:
         self.statusBar().showMessage(text)
+        self.messages.append(text)
+        del self.messages[:-MESSAGE_HISTORY]
+
+    def saw(self, text: str) -> bool:
+        """True if a status message containing ``text`` was shown (one may follow another at once)."""
+        return any(text in message for message in self.messages)

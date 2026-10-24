@@ -31,6 +31,7 @@ from cypilot.core.control import (
 from cypilot.core.profiles import Profile, ProfileError
 from cypilot.core.registers import Register, RegisterError, parse_like
 from cypilot.core.session import DEFAULT_LOCAL_NODE_ID, NodeSummary, Session
+from cypilot.core.sim_control import SimControl, SimStatus, SimulationError
 from cypilot.core.transport import InterfaceError, parse_interface
 from cypilot.dsdl import DsdlError, DsdlSource, ensure_dsdl
 
@@ -68,6 +69,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         DsdlError,
         ProfileError,
         ControlError,
+        SimulationError,
         RegisterError,
         TimeoutError,
         ValueError,
@@ -179,6 +181,12 @@ def _parser() -> argparse.ArgumentParser:
     rescue.add_argument("node", type=int)
     rescue.add_argument("--restart", action="store_true", help="allow the restart a latched E-stop needs")
     rescue.set_defaults(handler=_cmd_recover)
+
+    sim = commands.add_parser("sim", help="pause, run, advance or reset a simulated UNIMOC drive")
+    sim.add_argument("node", type=int)
+    sim.add_argument("action", choices=["status", "pause", "run", "advance", "reset"])
+    sim.add_argument("cycles", type=int, nargs="?", default=0, help="control cycles for advance")
+    sim.set_defaults(handler=_cmd_sim)
 
     dsdl = commands.add_parser("dsdl", help="download and compile the DSDL now, print where it is")
     dsdl.set_defaults(handler=_cmd_dsdl)
@@ -535,6 +543,41 @@ def _cmd_recover(args: argparse.Namespace) -> int:
     result = asyncio.run(run())
     _print(args, {"steps": result.steps, "ready": result.ready}, "\n".join(result.steps))
     return 0 if result.ready else 1
+
+
+def _cmd_sim(args: argparse.Namespace) -> int:
+    if args.action == "advance" and args.cycles <= 0:
+        raise ValueError("advance needs a positive number of control cycles")
+
+    async def run() -> SimStatus:
+        async with _session(args) as session:
+            await session.wait_for_node(args.node)
+            control = SimControl(session.node, args.node)
+            try:
+                if args.action == "pause":
+                    await control.set_paused(True)
+                elif args.action == "run":
+                    await control.set_paused(False)
+                elif args.action == "advance":
+                    return await control.advance(args.cycles)
+                elif args.action == "reset":
+                    await control.reset()
+                return await control.status()
+            finally:
+                control.close()
+
+    status = asyncio.run(run())
+    data = {
+        "paused": status.paused,
+        "cycle_count": status.cycle_count,
+        "cycle_period_ns": status.cycle_period_ns,
+        "virtual_time": status.virtual_time,
+    }
+    text = (
+        f"{'paused' if status.paused else 'running'}, cycle {status.cycle_count}, {status.virtual_time:.4f} s"
+    )
+    _print(args, data, text)
+    return 0
 
 
 def _cmd_dsdl(args: argparse.Namespace) -> int:
