@@ -86,3 +86,33 @@ def test_control_enables_stops_all_and_the_watchdog_catches_a_frozen_ui(qapp: An
         window.feed_timer.start()
     finally:
         window.close()
+
+
+def test_simulation_tab_builds_the_plant_inputs_and_steps_the_clock(qapp: Any, sim: SimInstance) -> None:
+    window = MainWindow()
+    window.show()
+    panel = window.simulation
+    try:
+        window.connect_to(parse_interface(sim.slcan_interfaces[0]), 127)
+        wait_until(qapp, lambda: window.nodes.row_of(DRIVE) is not None, timeout=30)
+        window.node_table.selectRow(window.nodes.row_of(DRIVE) or 0)
+        window.tabs.setCurrentWidget(panel)
+        wait_until(qapp, lambda: panel.inputs_layout.rowCount() >= 5)  # from the unimoc.sim.* registers
+        labels = {
+            panel.inputs_layout.itemAt(row, panel.inputs_layout.ItemRole.LabelRole).widget().text()
+            for row in range(panel.inputs_layout.rowCount())
+        }
+        assert {"shaft_mode", "load_torque", "dc_link_voltage", "external_enable"} <= labels
+        assert "paused" not in labels and "advance" not in labels  # those are the controls
+
+        wait_until(qapp, panel.pause_button.isEnabled)
+        panel.pause_button.click()
+        wait_until(qapp, lambda: panel.clock.text().startswith("paused"))
+        before = int(panel.clock.text().split("cycle ")[1].split(",")[0])
+        panel.cycles.setValue(1600)
+        panel.advance_button.click()
+        wait_until(qapp, lambda: f"cycle {before + 1600}," in panel.clock.text())
+        panel.run_button.click()
+        wait_until(qapp, lambda: panel.clock.text().startswith("running"))
+    finally:
+        window.close()

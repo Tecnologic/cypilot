@@ -12,7 +12,8 @@ in Python on pycyphal. The plan, the decisions and the phases are in
   (`session.py`), registers (`registers.py`), the heartbeat status
   (`status.py`), capabilities and ports from discovery (`capabilities.py`),
   settings profiles (`profiles.py`), enabling, setpoints, stop all, the
-  watchdog and recovery (`control.py`). **No Qt import in `core/`.**
+  watchdog and recovery (`control.py`), the simulation controls
+  (`sim_control.py`). **No Qt import in `core/`.**
 - `src/cypilot/dsdl.py`: downloads and compiles the DSDL of the pinned UNIMOC
   release (`DEFAULT_UNIMOC_REF`) or a local checkout (`CYPILOT_UNIMOC`).
 - `src/cypilot/simulation.py`: fetches and runs the UNIMOC `native_sim` drive.
@@ -20,7 +21,7 @@ in Python on pycyphal. The plan, the decisions and the phases are in
 - `src/cypilot/ui/`: the Qt GUI `cypilot`. `bus.py` runs the core on its own
   asyncio thread and hands results to the UI through Qt signals (no `await`
   on the UI thread); `models.py`, `panels.py`, `control_panel.py`,
-  `main_window.py`, `connect_dialog.py`, `app.py`. GUI tests use the `qapp` fixture
+  `simulation_panel.py`, `main_window.py`, `connect_dialog.py`, `app.py`. GUI tests use the `qapp` fixture
   (offscreen) and `tests/qt_support.py`.
 - `tests/unit/`: no bus. `tests/sim/`: against the released simulation (Linux).
 

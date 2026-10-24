@@ -70,6 +70,8 @@ cypilot-ctl caps 10                               # what the node supports, its 
 cypilot-ctl run 10 --current 0,2 --for 3          # enable, hold i_q = 2 A for 3 s, ramp down, disable
 cypilot-ctl stop                                  # SLEEP to every drive and zero setpoints, at once
 cypilot-ctl recover 10                            # STANDBY clears a trip; --restart for a latched E-stop
+cypilot-ctl sim 10 pause                          # simulated drive: status, pause, run, advance N, reset
+cypilot-ctl sim 10 advance 16000                  # one second of virtual time, as fast as it runs
 ```
 
 ### Settings profiles
@@ -114,6 +116,13 @@ position) with a ramp. Enabling publishes `ENGAGED` on the drive's own
 readiness subject (UNIMOC v0.2.0: 1024 + node-ID) 20 times a second; a drive is
 never enabled without a click. Setpoint subjects are shared by default, so a
 setpoint reaches every engaged drive on the same subject.
+
+The **Simulation** tab, for a simulated UNIMOC drive, shows the virtual clock
+and pauses, runs, advances (a number of control cycles of a paused
+simulation) and resets it (plant at standstill, virtual time 0). Its plant
+inputs (shaft mode, imposed speed, load torque, DC-link voltage, external
+enable, ...) come from the drive's `unimoc.sim.*` registers. The drive's
+readiness and setpoint timeouts run in real time, also while paused.
 
 ### Safety
 
