@@ -1,0 +1,43 @@
+name: Release
+
+# A tag vX.Y.Z (the version in pyproject.toml and cypilot/__init__.py) makes the
+# GitHub release, with the executables for Linux and Windows and the wheel.
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: The tag is the version
+        run: |
+          version=$(sed -n 's/^__version__ = "\(.*\)"$/\1/p' src/cypilot/__init__.py)
+          grep -q "^version = \"$version\"$" pyproject.toml
+          test "v$version" = "$GITHUB_REF_NAME" || { echo "tag $GITHUB_REF_NAME, version $version"; exit 1; }
+
+  build:
+    needs: check
+    uses: ./.github/workflows/build.yml
+    with:
+      release: true
+
+  publish:
+    needs: build
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: cypilot-*
+          merge-multiple: true
+          path: dist
+      - name: Create the release with the files
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "$GITHUB_REF_NAME" dist/* --repo "$GITHUB_REPOSITORY" --title "cypilot $GITHUB_REF_NAME" --generate-notes

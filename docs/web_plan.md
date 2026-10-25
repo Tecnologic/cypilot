@@ -223,7 +223,7 @@ connected, and a browser that connects mid-run sees it.
 | W4 | **Done 2026-10-25 (the telemetry rate stays as configured):** **Run log:** runs started and stopped by the user, raw frames plus decoded channels plus `run.json`, list, download and delete in the web app, replay, free-space limit | A run of an engage, a setpoint step and a trip in the simulation, downloaded, replayed and deleted from the UI |
 | W5 | **Done 2026-10-25:** **Scope** (old G5): cymon captures, several nodes on one shared trigger, overlay, stored in the run | Capture of two simulated drives on one trigger |
 | W6 | **Set up 2026-10-25 (MCP2518FD HAT; known Wi-Fi, else the access point; `scripts/pi-setup.sh`, `docs/pi.md`, `scripts/load_test.py`); the day on the bench is open:** **Raspberry Pi:** setup script, systemd service, access point, CAN FD HAT; load test (four drives, all subjects recorded, two browsers) | Runs a day on the cart bench with the drives |
-| W7 | **Packaging and the end of cymon:** wheel, Windows and Linux executables without Qt, README workflows; `Tecnologic/cymon` archived | Install on a clean Windows machine and a fresh Pi |
+| W7 | **Packaging done 2026-10-25 (executables and wheel built and smoke-tested in CI, release on a tag); archiving cymon is the owner's step:** **Packaging and the end of cymon:** wheel, Windows and Linux executables without Qt, README workflows; `Tecnologic/cymon` archived | Install on a clean Windows machine and a fresh Pi |
 
 Old phases: G5 becomes W5, G6 (cart, e-bike, VDC and BMS views) comes after
 W3 as further views, G7 becomes W7.
