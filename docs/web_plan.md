@@ -49,11 +49,11 @@ the core and stays; the views are rebuilt in the web UI.
 | # | Question | Proposal | Why |
 |---|---|---|---|
 | 1 | Which repository and name | **cypilot** is the app; the cymon features move in. The `cymon` name stays with **cymon-lib** (the firmware library and the `cymon` DSDL). `Tecnologic/cymon` gets a last release that points to cypilot, then is archived | cypilot has the larger core, the UNIMOC contract, CI against the released simulation and Apache-2.0; two things called cymon (host tool and firmware library) confuse already |
-| 2 | License of the merged code | **Apache-2.0** for all of it; cymon's code is relicensed when it moves | The cymon commits are yours and AI-generated (Claude, Copilot), so you can relicense. Check one point: two cymon commits are authored with a company address (`@fette-compacting.com`); if an employment contract gives your employer rights to work done under that address, clear those two commits (or rewrite their content) before relicensing. The AGPL would also apply to a Pi on the cart that serves the UI over the network: every user would have to be offered the source. (This is no legal advice.) |
+| 2 | License of the merged code | **Decided 2026-10-25: Apache-2.0** for all of it; cymon's code is relicensed when it moves | The cymon code is the owner's (with AI-generated parts), so it can be relicensed. The AGPL would also apply to a Pi on the cart that serves the UI over the network: every user would have to be offered the source |
 | 3 | Qt GUI | **Removed** once the web UI has the G2 to G4 functions (W3); until then it stays as it is, without new features | One UI to maintain; no PySide6 and Qt bundles on Windows and the Pi |
 | 4 | Front-end technology | **cymon's**: static HTML, Alpine.js, uPlot, vendored, no Node.js build step | Works offline on the cart, small enough for a Pi, already tested; a build step can come later if the UI grows past what Alpine handles well |
 | 5 | Access on the cart | The Pi opens its own Wi-Fi access point; the app binds to it, with a **PIN or token** (shown as a QR code on the bench UI); **viewer** and **operator** roles (section 5) | Without a login, anyone on the network could engage a drive |
-| 6 | Run log format | **Two files per run:** the raw CAN frames (`candump` log, the truth, replayable into `vcan`) and the decoded channels (the existing cypilot export: CSV per source, `run.json` with nodes, firmware versions and register snapshots, markers) | Raw frames cost little at 1 Mbit/s and lose nothing; the decoded files open in any tool. MCAP (Foxglove) stays an option |
+| 6 | Run log format (recording only on the user's start, decided 2026-10-25) | **Two files per run:** the raw CAN frames (`candump` log, the truth, replayable into `vcan`) and the decoded channels (the existing cypilot export: CSV per source, `run.json` with nodes, firmware versions and register snapshots, markers) | Raw frames cost little at 1 Mbit/s and lose nothing; the decoded files open in any tool. MCAP (Foxglove) stays an option |
 | 7 | Pi hardware | Raspberry Pi 4 or 5 (64-bit OS), a CAN FD HAT with the MCP2518FD (mainline `mcp251xfd` driver, SocketCAN), a high-endurance SD card or a USB SSD for the logs | SocketCAN is the best supported path; the MCP2518FD is the controller cymon's first hardware used too |
 
 ## 3. Architecture
@@ -114,7 +114,7 @@ second UI):
 | Plots | Channels of any nodes on one time axis (uPlot), window, pause, markers, export; replay of a run | cypilot G4 + cymon monitor |
 | Scope | cymon captures, several nodes on one trigger, overlay, CSV | cymon + G5 |
 | Monitor, Publish | Any subject and type, generic publications with a lease (expert mode) | cymon |
-| Runs | Start and stop a run, its marker notes, the list of runs with size and duration, download (zip), delete | new |
+| Runs | Start and stop a run (only by the user), its notes, the list of runs with size and duration, download (zip or single files), delete, free space | new |
 | Simulation | Pause, advance, reset, plant inputs | cypilot |
 | Log | Diagnostics of all nodes | both |
 
@@ -155,9 +155,13 @@ the same rules hold, moved to the server:
 A run is a time span with everything on the bus, stored on the box that runs
 the app (the Pi on the cart):
 
-- **Start and stop:** by hand (Runs view, also from the phone), or
-  automatically: start when a drive engages or a node leaves standby, stop a
-  configurable time after all are disengaged again. Both can be on.
+- **Start and stop only by the user** (decided 2026-10-25): **Record** in
+  the header of every view (also on the phone) starts a run with an optional
+  name, **Stop** ends it. The app never starts a recording by itself, also
+  not on engage, after a reconnect or a restart; a run that was going when
+  the app or the Pi stopped is closed and kept, not continued. While a run
+  records, the header shows it with its duration and size on every client.
+  Recording needs no control lease: a viewer may record too.
 - **Content:**
   - `frames.log`: every CAN frame with its time stamp, `candump -L` format
     (replay with `canplayer` into `vcan0`, and the app decodes it again);
@@ -171,11 +175,19 @@ the app (the Pi on the cart):
   nodes, at their own rate (telemetry 20 Hz, drive status 50 Hz); a run can
   also raise `unimoc.telemetry.rate` for its duration and restores it.
 - **Size:** the bus carries at most 1 Mbit/s; the raw log is under 100 KB/s
-  at full load, a few MB per minute of driving. Closed runs are compressed;
-  the oldest runs are deleted when free space drops below a limit.
-- **Afterwards:** download a run as a zip, replay it in the Plots view (the
-  existing `Recorder.load`), or replay the raw frames into the simulation's
-  bus for a test.
+  at full load, a few MB per minute of driving. Closed runs are compressed.
+  Nothing is deleted automatically: the Runs view shows the free space and
+  warns below a limit; at a hard limit the running recording stops (with a
+  marker and a message to every client) instead of filling the disk.
+- **In the web app** (Runs view): the list of runs with name, start,
+  duration, size and nodes; **download** a run as a zip (or a single file of
+  it) to the phone, tablet or laptop; **delete** a run (with a confirmation,
+  not while it records), or several at once; rename it and edit its notes.
+  The API: `GET /api/runs`, `POST /api/runs/start`, `POST /api/runs/stop`,
+  `GET /api/runs/{id}/download`, `DELETE /api/runs/{id}`.
+- **Afterwards:** replay a run in the Plots view (the existing
+  `Recorder.load`), or replay the raw frames into the simulation's bus for a
+  test.
 - **Captures** (scope) taken during a run are stored in the run as well.
 
 The recorder runs in the server, so a run continues while no browser is
@@ -208,7 +220,7 @@ connected, and a browser that connects mid-run sees it.
 | W1 | **Core merge:** cymon's transport (CANable FD plugin, adapter search, redundant groups), PnP allocator, demo devices, subject monitor and publications with a lease, scope client, extra DSDL roots move into `cypilot.core`; duplicates (session, registers, DSDL, node table) are unified; cymon's tests come along | `cypilot-ctl` does everything both tools did on the command line; the core tests of both pass |
 | W2 | **Web server:** `cypilot.web` (FastAPI, event hub, static files), cymon's API plus control, profiles, simulation, plots; auth (PIN or token) and the control lease | API tests (httpx) against the simulation, lease loss stops a drive |
 | W3 | **Web UI** with the G2 to G4 functions: bus, nodes with chips, registers with the description file, control, plots, simulation, log; responsive for the phone; then the **Qt GUI is removed** | Browser tests with Playwright (headless Chromium) against the simulation, also at phone size |
-| W4 | **Run log:** runs by hand and automatic, raw frames plus decoded channels plus `run.json`, list, download, replay, retention | A run of an engage, a setpoint step and a trip in the simulation, replayed |
+| W4 | **Run log:** runs started and stopped by the user, raw frames plus decoded channels plus `run.json`, list, download and delete in the web app, replay, free-space limit | A run of an engage, a setpoint step and a trip in the simulation, downloaded, replayed and deleted from the UI |
 | W5 | **Scope** (old G5): cymon captures, several nodes on one shared trigger, overlay, stored in the run | Capture of two simulated drives on one trigger |
 | W6 | **Raspberry Pi:** setup script, systemd service, access point, CAN FD HAT; load test (four drives, all subjects recorded, two browsers) | Runs a day on the cart bench with the drives |
 | W7 | **Packaging and the end of cymon:** wheel, Windows and Linux executables without Qt, README workflows; `Tecnologic/cymon` archived | Install on a clean Windows machine and a fresh Pi |
@@ -227,7 +239,9 @@ W3 as further views, G7 becomes W7.
   against the simulation: connect, node chips, a register write, enable and
   stop, a plot, a run; once at laptop size and once at phone size.
 - **Run log:** a recorded run of the simulation replayed through `vcan`
-  gives the same decoded channels.
+  gives the same decoded channels; no run starts without the user's start
+  (engage, reconnect and restart start none); download and delete through the
+  API and the UI.
 - **Pi:** no CI; W6 is a manual check with a written checklist.
 
 ## 10. Risks and open points
@@ -238,7 +252,7 @@ W3 as further views, G7 becomes W7.
    the server sends only the shown channels, decimated to the plot width.
 3. **SD card wear:** continuous logging wants a USB SSD or a high-endurance
    card; the recorder writes in blocks of about one second.
-4. **License (decision 2):** the company e-mail on two cymon commits.
+4. Decided 2026-10-25: the license is Apache-2.0 (decision 2).
 5. **Scope of cymon's generic tools** (any subject, any publication): kept as
    an expert mode, or dropped where cypilot's typed views cover them.
 6. **Firmware update over Cyphal** (cymon roadmap, UNIMOC F3) fits the same
