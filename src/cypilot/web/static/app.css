@@ -99,6 +99,17 @@ textarea.json { width: 100%; font-family: ui-monospace, monospace; font-size: 12
 .card.login { display: flex; flex-direction: column; gap: 10px; min-width: 260px; }
 .u-legend { font-size: 12px; }
 
+button.danger { color: var(--bad); border-color: var(--bad); }
+a.button { display: inline-block; text-decoration: none; color: var(--fg); border: 1px solid var(--line); border-radius: 6px; padding: 1px 8px; font-size: 12px; }
+a { color: var(--accent); }
+.rec { display: inline-flex; align-items: center; gap: 6px; color: var(--bad); font-weight: 600; font-size: 12px; }
+.rec-dot { width: 10px; height: 10px; border-radius: 50%; background: var(--bad); animation: blink 1s infinite; }
+@keyframes blink { 50% { opacity: .3; } }
+.hint.bad { color: var(--bad); }
+table.runs td { font-size: 13px; }
+table.runs tr.active td { color: var(--bad); }
+h3 { margin: 12px 0 4px; font-size: 14px; }
+
 /* Phone: the views move to a bottom bar; STOP ALL and E-STOP stay at the top. */
 @media (max-width: 720px) {
   .split { grid-template-columns: 1fr; }

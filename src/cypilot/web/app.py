@@ -28,7 +28,7 @@ from pathlib import Path
 from typing import Any
 
 from fastapi import APIRouter, Body, Depends, FastAPI, HTTPException, Request, Response, WebSocket
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 from starlette.websockets import WebSocketDisconnect
@@ -37,6 +37,7 @@ from cypilot import __version__
 from cypilot.core.control import ControlError, SetpointMode, find_target, recover
 from cypilot.core.hub import BusConfig, BusHub, NotConnected, NotOperator
 from cypilot.core.registers import Register, RegisterError, RegisterValue, parse_like
+from cypilot.core.runs import RunError, replay_json
 from cypilot.core.scope import CaptureRequest, ScopeError
 from cypilot.core.signals import SignalError, load_type, sources, type_name
 from cypilot.core.sim_control import SimControl, SimulationError
@@ -129,6 +130,20 @@ class PublishRequest(BaseModel):
     priority: str = "nominal"
 
 
+class RunStart(BaseModel):
+    name: str = Field("", max_length=200)
+    notes: str = Field("", max_length=20000)
+
+
+class RunUpdate(BaseModel):
+    name: str | None = Field(None, max_length=200)
+    notes: str | None = Field(None, max_length=20000)
+
+
+class RunMark(BaseModel):
+    text: str = Field(min_length=1, max_length=500)
+
+
 class CaptureBody(BaseModel):
     channels: list[int] = Field(min_length=1, max_length=16)
     sample_period_us: float = Field(gt=0)
@@ -212,6 +227,10 @@ def create_app(hub: BusHub, *, pin: str | None = None) -> FastAPI:
     @app.exception_handler(PermissionError)
     async def forbidden(_: Request, error: Exception) -> JSONResponse:
         return JSONResponse({"detail": str(error)}, status_code=403)
+
+    @app.exception_handler(RunError)
+    async def run_conflict(_: Request, error: Exception) -> JSONResponse:
+        return JSONResponse({"detail": str(error)}, status_code=409)
 
     @app.exception_handler(ControlError)
     @app.exception_handler(RegisterError)
@@ -566,7 +585,11 @@ def create_app(hub: BusHub, *, pin: str | None = None) -> FastAPI:
     @api.post("/nodes/{node_id}/scope/capture")
     async def scope_capture(node_id: int, body: CaptureBody) -> dict[str, Any]:
         known(node_id)
-        return vars(await scope().capture(node_id, CaptureRequest(**body.model_dump())))
+        capture = await scope().capture(node_id, CaptureRequest(**body.model_dump()))
+        if hub.recording is not None:  # captures during a run are stored in it
+            names = {v["id"]: v["name"] for v in (await scope().info(node_id))["variables"]}
+            hub.recording.run.add_capture(node_id, capture, [names.get(c, f"ch{c}") for c in body.channels])
+        return vars(capture)
 
     @api.post("/nodes/{node_id}/scope/read")
     async def scope_read(node_id: int) -> dict[str, Any]:
@@ -576,6 +599,75 @@ def create_app(hub: BusHub, *, pin: str | None = None) -> FastAPI:
     async def scope_disarm(node_id: int) -> dict[str, Any]:
         await scope().disarm(node_id)
         return {"ok": True}
+
+    # --- Runs: started and stopped only by the user; any client may record ---------
+
+    @api.get("/runs")
+    async def runs() -> dict[str, Any]:
+        state = hub.run_state()
+        state["runs"] = hub.runs.summaries() if hub.runs is not None else []
+        return state
+
+    @api.post("/runs/start")
+    async def start_run(body: RunStart | None = None) -> dict[str, Any]:
+        return await hub.start_run(body.name if body else "", body.notes if body else "")
+
+    @api.post("/runs/stop")
+    async def stop_run() -> dict[str, Any]:
+        summary = await hub.stop_run()
+        if summary is None:
+            raise HTTPException(409, "no run records")
+        return summary
+
+    @api.post("/runs/mark")
+    async def mark_run(body: RunMark) -> dict[str, Any]:
+        hub.mark_run(body.text)
+        return {"ok": True}
+
+    @api.get("/runs/{run_id}")
+    async def run_detail(run_id: str) -> dict[str, Any]:
+        store = hub.require_runs()
+        detail = store.get(run_id)
+        detail["files"] = (
+            await asyncio.to_thread(store.files, run_id) if detail.get("state") == "closed" else []
+        )
+        return detail
+
+    @api.patch("/runs/{run_id}")
+    async def update_run(run_id: str, body: RunUpdate) -> dict[str, Any]:
+        return hub.require_runs().update(run_id, name=body.name, notes=body.notes)
+
+    @api.delete("/runs/{run_id}")
+    async def delete_run(run_id: str) -> dict[str, Any]:
+        await asyncio.to_thread(hub.require_runs().delete, run_id)
+        hub.events.emit("run", action="deleted", run={"id": run_id})
+        return {"ok": True}
+
+    @api.get("/runs/{run_id}/download")
+    async def download_run(run_id: str) -> StreamingResponse:
+        store = hub.require_runs()
+        data = await asyncio.to_thread(lambda: b"".join(store.archive(run_id)))
+        headers = {"Content-Disposition": f'attachment; filename="cypilot-run-{run_id}.zip"'}
+        return StreamingResponse(iter([data]), media_type="application/zip", headers=headers)
+
+    @api.get("/runs/{run_id}/files/{name}")
+    async def run_file(run_id: str, name: str) -> Response:
+        data = await asyncio.to_thread(hub.require_runs().read_file, run_id, name)
+        media = (
+            "application/json"
+            if name.endswith(".json")
+            else "text/csv"
+            if name.endswith(".csv")
+            else "text/plain"
+        )
+        headers = {"Content-Disposition": f'attachment; filename="{run_id}-{name}"'}
+        return Response(data, media_type=media, headers=headers)
+
+    @api.get("/runs/{run_id}/replay")
+    async def replay_run(run_id: str, max_points: int = 20000) -> dict[str, Any]:
+        store = hub.require_runs()
+        recorder = await asyncio.to_thread(store.recorder, run_id)
+        return replay_json(recorder, max(100, min(max_points, 200000)))
 
     app.include_router(api)
 

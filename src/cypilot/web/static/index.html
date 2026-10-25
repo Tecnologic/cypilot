@@ -32,6 +32,16 @@
   <button class="small" x-show="status?.connected && !isOperator()" @click="takeControl()">Take control</button>
   <button class="small" x-show="isOperator()" @click="releaseControl()">Release</button>
   <span class="spacer"></span>
+  <template x-if="runs.available && runs.active">
+    <span class="rec" id="recording">
+      <span class="rec-dot"></span>
+      <span x-text="`REC ${fmtDuration(runs.active.duration)} · ${fmtSize(runs.active.size)}`"></span>
+      <button class="small" @click="noteRun()" title="A note on the time axis of the run">Note</button>
+      <button id="stop-run" class="small" @click="stopRun()">Stop</button>
+    </span>
+  </template>
+  <button id="record" class="small" x-show="runs.available && !runs.active && status?.connected" @click="startRun()"
+          title="Record everything on the bus until you stop it">● Record</button>
   <button class="small theme" @click="toggleTheme()" :title="theme === 'dark' ? 'Light theme' : 'Dark theme'" x-text="theme === 'dark' ? '☀' : '☾'"></button>
   <button id="stop-all" class="stop" @click="stopAll()" title="SLEEP to every drive and stop all publications (Esc)">STOP ALL</button>
   <button id="estop" class="estop" @click="estop()" title="EMERGENCY_STOP to every UNIMOC node; needs a restart (Shift+Esc)">E-STOP</button>
@@ -253,6 +263,8 @@
 
 <!-- ───────────── Plots ───────────── -->
 <main x-show="view === 'plots'">
+  <p class="banner" x-show="replay" id="replay-banner">
+    Replay of the run <strong x-text="replay?.name"></strong>. <button class="small" @click="leaveReplay()">Back to live</button></p>
   <div class="row">
     <select id="plot-source" x-model="plotSourceKey">
       <template x-for="s in plotSources" :key="s.key">
@@ -346,7 +358,7 @@
     <table class="registers">
       <tbody>
         <template x-for="r in plantInputs()" :key="r.name">
-          <tr>
+          <tr :data-input="r.name">
             <td class="name"><span class="mono" x-text="r.name.slice('unimoc.sim.'.length)"></span>
               <div class="help" x-text="describe(r.name)?.help ?? ''"></div></td>
             <td class="value"><input :class="{dirty: dirty(r)}" x-model="r.edit" @keydown.enter="writeRegister(r)"></td>
@@ -357,6 +369,69 @@
       </tbody>
     </table>
   </section>
+</main>
+
+<!-- ───────────── Runs ───────────── -->
+<main x-show="view === 'runs'">
+  <p class="hint" x-show="!runs.available">This server records no runs.</p>
+  <template x-if="runs.available">
+    <div>
+      <div class="row">
+        <button @click="loadRuns()">Refresh</button>
+        <button class="danger" @click="deleteRuns(runs.selected)" :disabled="!runs.selected.length"
+                x-text="runs.selected.length > 1 ? `Delete ${runs.selected.length} runs` : 'Delete'"></button>
+        <span class="hint" :class="{bad: runs.space?.warn}" x-show="runs.space"
+              x-text="runs.space ? `${fmtSize(runs.space.free)} free of ${fmtSize(runs.space.total)}` + (runs.space.warn ? ' — little space left' : '') : ''"></span>
+        <span class="hint">Runs start and stop only with Record and Stop.</span>
+      </div>
+      <p class="empty" x-show="!runs.list.length">No runs yet.</p>
+      <table class="card runs" x-show="runs.list.length">
+        <tbody>
+          <template x-for="r in runs.list" :key="r.id">
+            <tr :data-run="r.id" :class="{active: r.state === 'recording'}">
+              <td><input type="checkbox" :checked="runs.selected.includes(r.id)" @change="toggleRun(r.id)" :disabled="r.state === 'recording'"></td>
+              <td class="name"><a href="#" @click.prevent="openRun(r)" x-text="r.name || r.id"></a>
+                <div class="hint" x-text="fmtDate(r.start) + (r.state === 'recording' ? ' · recording' : '')"></div></td>
+              <td x-text="fmtDuration(r.duration)"></td>
+              <td x-text="fmtSize(r.size)"></td>
+              <td class="hint" x-text="r.nodes.length ? 'nodes ' + r.nodes.join(', ') : ''"></td>
+              <td class="actions">
+                <a class="button small" :href="`/api/runs/${r.id}/download`" x-show="r.state === 'closed'" download>Download</a>
+                <button class="small" @click="replayRun(r)" x-show="r.state === 'closed'">Replay</button>
+              </td>
+            </tr>
+          </template>
+        </tbody>
+      </table>
+      <template x-if="runs.detail">
+        <section class="card" id="run-detail">
+          <h2 x-text="runs.detail.name || runs.detail.id"></h2>
+          <div class="form">
+            <label>Name <input id="run-name" x-model="runs.detail.name"></label>
+            <label class="wide-field">Notes <textarea id="run-notes" rows="3" x-model="runs.detail.notes"></textarea></label>
+          </div>
+          <div class="row"><button @click="saveRun(runs.detail)">Save</button>
+            <span class="hint" x-text="runs.detail.stop_reason ? 'ended: ' + runs.detail.stop_reason : ''"></span></div>
+          <dl class="info small">
+            <dt>Interface</dt><dd x-text="runs.detail.interface"></dd>
+            <dt>Start</dt><dd x-text="fmtDate(runs.detail.start)"></dd>
+            <dt>Markers</dt><dd x-text="runs.detail.markers.length"></dd>
+          </dl>
+          <h3>Files</h3>
+          <template x-for="f in runs.detail.files" :key="f.name">
+            <div class="row tight"><a :href="`/api/runs/${runs.detail.id}/files/${encodeURIComponent(f.name)}`" download x-text="f.name"></a>
+              <span class="hint" x-text="fmtSize(f.size)"></span></div>
+          </template>
+          <h3>Markers</h3>
+          <table class="log"><tbody>
+            <template x-for="(m, i) in runs.detail.markers" :key="i">
+              <tr><td class="mono" x-text="fmtTime(m.time)"></td><td x-text="m.kind"></td><td x-text="m.text"></td></tr>
+            </template>
+          </tbody></table>
+        </section>
+      </template>
+    </div>
+  </template>
 </main>
 
 <!-- ───────────── Monitor and publish (expert) ───────────── -->

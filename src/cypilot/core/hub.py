@@ -32,6 +32,8 @@ from typing import Any
 from cypilot import __version__
 from cypilot.core.control import ControlError, Controller, DriveTarget, find_target
 from cypilot.core.events import EventHub
+from cypilot.core.recording import RunRecording
+from cypilot.core.runs import RunError, RunStore
 from cypilot.core.scope import ScopeClient
 from cypilot.core.session import DEFAULT_LOCAL_NODE_ID, SEVERITY_NAMES, LogRecord, NodeSummary, Session
 from cypilot.core.subjects import PublisherManager, SubjectMonitor
@@ -96,8 +98,13 @@ class BusHub:
     """Connects to and disconnects from the bus at run time; owns the control lease."""
 
     def __init__(
-        self, *, lease_time: float = DEFAULT_LEASE, clock: Callable[[], float] = time.monotonic
+        self,
+        *,
+        lease_time: float = DEFAULT_LEASE,
+        clock: Callable[[], float] = time.monotonic,
+        runs: RunStore | None = None,
     ) -> None:
+        """``runs``: where runs are recorded; None: no recording."""
         if not LEASE_LIMITS[0] <= lease_time <= LEASE_LIMITS[1]:
             raise ValueError(f"the lease time must be within {LEASE_LIMITS[0]} .. {LEASE_LIMITS[1]} s")
         self.events = EventHub()
@@ -115,6 +122,9 @@ class BusHub:
         self._snapshots: asyncio.Task[None] | None = None
         self._lock = asyncio.Lock()
         self._connection = 0
+        self.runs = runs
+        self.recording: RunRecording | None = None
+        self._capturing: Session | None = None
 
     # --- Connection ------------------------------------------------------------
 
@@ -171,6 +181,8 @@ class BusHub:
             await self._close()
 
     async def _close(self) -> None:
+        if self.recording is not None:
+            await self.stop_run("the bus was disconnected")
         if self._snapshots is not None:
             self._snapshots.cancel()
             self._snapshots = None
@@ -367,3 +379,65 @@ class BusHub:
 
     def _emit_control(self, reason: str) -> None:
         self.events.emit("control", reason=reason, **self.control_state())
+
+    # --- Runs (started and stopped only by the user; any client) -----------------
+
+    def require_runs(self) -> RunStore:
+        if self.runs is None:
+            raise RunError("this server records no runs")
+        return self.runs
+
+    def run_state(self) -> dict[str, Any]:
+        if self.runs is None:
+            return {"available": False, "active": None}
+        active = self.recording.run.summary() if self.recording is not None else None
+        return {"available": True, "active": active, "space": self.runs.space()}
+
+    async def start_run(self, name: str = "", notes: str = "") -> dict[str, Any]:
+        """Starts recording everything on the bus; only ever on a request of the user."""
+        store = self.require_runs()
+        session = self.require_session()
+        if self.recording is not None:
+            raise RunError(f"run {self.recording.run.run_id} records already")
+        info = {
+            "cypilot": __version__,
+            "interface": session.describe(),
+            "interfaces": [
+                {"text": spec.text, "mtu": spec.mtu, "bitrate": list(spec.bitrate)}
+                for spec in session.interfaces
+            ],
+            "local_node_id": session.local_node_id,
+            "lease_time": self.lease_time,
+        }
+        run = store.start(name, notes, info)
+        recording = RunRecording(session, store, self.events, run)
+        self.recording = recording
+        if self._capturing is not session:
+            transport = session.node.presentation.transport
+            with contextlib.suppress(Exception):  # transports without a capture: subjects only
+                transport.begin_capture(self._on_capture)
+            self._capturing = session
+        recording.start()
+        _logger.info("run %s started", run.run_id)
+        self.events.emit("run", action="started", run=run.summary())
+        return run.summary()
+
+    async def stop_run(self, reason: str = "stopped by the user") -> dict[str, Any] | None:
+        recording, self.recording = self.recording, None
+        if recording is None:
+            return None
+        summary = await recording.close(reason)
+        _logger.info("run %s stopped: %s", recording.run.run_id, reason)
+        self.events.emit("run", action="stopped", run=summary)
+        return summary
+
+    def mark_run(self, text: str) -> None:
+        """A note of the user on the time axis of the run."""
+        if self.recording is None:
+            raise RunError("no run records")
+        self.recording.run.mark(text, kind="note")
+
+    def _on_capture(self, capture: Any) -> None:
+        recording = self.recording
+        if recording is not None:
+            recording.on_capture(capture)

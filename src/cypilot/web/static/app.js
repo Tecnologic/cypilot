@@ -93,7 +93,8 @@ window.cypilot = function () {
     views: [
       { id: 'bus', label: 'Bus' }, { id: 'nodes', label: 'Nodes' }, { id: 'registers', label: 'Registers' },
       { id: 'control', label: 'Control' }, { id: 'plots', label: 'Plots' }, { id: 'scope', label: 'Scope' },
-      { id: 'sim', label: 'Simulation' }, { id: 'expert', label: 'Monitor' }, { id: 'log', label: 'Log' },
+      { id: 'sim', label: 'Simulation' }, { id: 'runs', label: 'Runs' }, { id: 'expert', label: 'Monitor' },
+      { id: 'log', label: 'Log' },
     ],
     view: 'nodes',
     ws: null,
@@ -138,6 +139,8 @@ window.cypilot = function () {
     log: [],
     logLevel: 'info',
     logNode: '',
+    runs: { available: false, active: null, space: null, list: [], selected: [], open: null, detail: null },
+    replay: null,
 
     async init() {
       window.addEventListener('keydown', (e) => {
@@ -174,6 +177,7 @@ window.cypilot = function () {
         await this.setStatus(await api('GET', '/api/status'));
         if (!this.status.connected) { this.view = 'bus'; this.searchAdapters(); }
         this.log = await api('GET', '/api/log').catch(() => []);
+        await this.loadRuns();
       } catch (e) { this.fail(e); }
     },
 
@@ -247,6 +251,7 @@ window.cypilot = function () {
         case 'subject': this.onSubject(e); break;
         case 'publisher': this.onPublisher(e); break;
         case 'capture': this.scope.state = e.state; break;
+        case 'run': this.onRun(e); break;
       }
     },
 
@@ -276,6 +281,7 @@ window.cypilot = function () {
       if (this.view === 'scope' && !this.scope.info) this.loadScope();
       if (this.view === 'sim') { this.loadSim(); if (!this.registers.length) this.loadRegisters(); }
       if (this.view === 'plots') this.redraw();
+      if (this.view === 'runs') this.loadRuns();
     },
 
     // --- Stops: open to every client ---------------------------------------------
@@ -497,12 +503,13 @@ window.cypilot = function () {
       return this.subscriptions.find(x => x.id === s.id);
     },
     async addSource() {
+      if (this.replay) this.leaveReplay();
       const source = this.plotSources.find(s => s.key === this.plotSourceKey);
       if (!source) return;
       try { await this.subscribe(source.subject, source.type_name, `${source.node_id}/${source.port}`); } catch (e) { this.fail(e); }
     },
     async dropSubscription(s) {
-      await api('DELETE', `/api/subjects/${s.id}`).catch(e => this.fail(e));
+      if (!String(s.id).startsWith('replay')) await api('DELETE', `/api/subjects/${s.id}`).catch(e => this.fail(e));
       this.subscriptions = this.subscriptions.filter(x => x.id !== s.id);
       this.channels = this.channels.filter(c => c.sub !== s.id);
       delete buffers[s.id];
@@ -521,7 +528,7 @@ window.cypilot = function () {
     },
     onSubject(e) {
       const s = this.subscriptions.find(x => x.id === e.id);
-      if (!s) return;
+      if (!s || this.replay) return;
       s.count += e.t.length;
       s.last = e.last;
       s.sources = [...new Set([...s.sources, ...e.source.filter(x => x !== null)])];
@@ -705,6 +712,106 @@ window.cypilot = function () {
       return this.registers.filter(r => r.name.startsWith('unimoc.sim.') && r.mutable
         && !['unimoc.sim.paused', 'unimoc.sim.advance'].includes(r.name));
     },
+
+    // --- Runs: started and stopped only by the user --------------------------------
+
+    async loadRuns() {
+      try {
+        const state = await api('GET', '/api/runs');
+        Object.assign(this.runs, { available: state.available, active: state.active, space: state.space ?? null, list: state.runs });
+        this.runs.selected = this.runs.selected.filter(id => state.runs.some(r => r.id === id));
+      } catch (e) { this.fail(e); }
+    },
+    onRun(e) {
+      if (e.action === 'recording' || e.action === 'started') this.runs.active = e.run;
+      if (e.action === 'stopped' || e.action === 'disk full') this.runs.active = null;
+      if (e.action === 'disk full') this.notify('The disk is nearly full: the run stopped.', true);
+      if (e.action !== 'recording') this.loadRuns();
+    },
+    async startRun() {
+      const name = prompt('Name of the run (optional)', '');
+      if (name === null) return;
+      try { this.runs.active = await api('POST', '/api/runs/start', { name }); } catch (e) { this.fail(e); }
+    },
+    async stopRun() {
+      try { await api('POST', '/api/runs/stop'); this.runs.active = null; await this.loadRuns(); } catch (e) { this.fail(e); }
+    },
+    async noteRun() {
+      const text = prompt('Note on the time axis of the run', '');
+      if (!text) return;
+      try { await api('POST', '/api/runs/mark', { text }); } catch (e) { this.fail(e); }
+    },
+    async openRun(run) {
+      if (this.runs.open === run.id) { this.runs.open = null; this.runs.detail = null; return; }
+      this.runs.open = run.id;
+      this.runs.detail = null;
+      try { this.runs.detail = await api('GET', `/api/runs/${run.id}`); } catch (e) { this.fail(e); }
+    },
+    async saveRun(detail) {
+      try {
+        await api('PATCH', `/api/runs/${detail.id}`, { name: detail.name, notes: detail.notes });
+        await this.loadRuns();
+        this.notify('Saved.');
+      } catch (e) { this.fail(e); }
+    },
+    async deleteRuns(ids) {
+      if (!ids.length) return;
+      const names = ids.map(id => this.runs.list.find(r => r.id === id)?.name || id).join(', ');
+      if (!confirm(`Delete ${ids.length === 1 ? 'the run' : ids.length + ' runs'} ${names}? This cannot be undone.`)) return;
+      for (const id of ids) {
+        try { await api('DELETE', `/api/runs/${id}`); } catch (e) { this.fail(e); }
+      }
+      if (ids.includes(this.runs.open)) { this.runs.open = null; this.runs.detail = null; }
+      await this.loadRuns();
+    },
+    toggleRun(id) {
+      const sel = this.runs.selected;
+      this.runs.selected = sel.includes(id) ? sel.filter(x => x !== id) : [...sel, id];
+    },
+    async replayRun(run) {
+      try {
+        const data = await api('GET', `/api/runs/${run.id}/replay`);
+        for (const s of this.subscriptions) {
+          if (!String(s.id).startsWith('replay')) api('DELETE', `/api/subjects/${s.id}`).catch(() => {});
+        }
+        this.dropAllChannels();
+        this.replay = { id: run.id, name: run.name || run.id };
+        let index = 0;
+        let start = Infinity, end = -Infinity;
+        for (const src of data.sources) {
+          const id = `replay${index++}`;
+          const fields = Object.keys(src.fields);
+          this.subscriptions.push({ id, subject_id: src.subject, type: src.type, count: src.t.length, label: src.key, fields, last: null, sources: [src.node_id] });
+          buffers[id] = { t: src.t, v: src.fields };
+          for (const f of fields.slice(0, 3)) this.channels.push({ sub: id, field: f, label: `${src.key} ${f}` });
+          if (src.t.length) { start = Math.min(start, src.t[0]); end = Math.max(end, src.t[src.t.length - 1]); }
+        }
+        for (const m of data.markers) markers.push(m);
+        if (Number.isFinite(start)) this.windowSeconds = Math.max(1, Math.ceil(end - start));
+        this.show('plots');
+        this.rebuildPlot();
+      } catch (e) { this.fail(e); }
+    },
+    leaveReplay() {
+      this.replay = null;
+      this.dropAllChannels();
+      this.windowSeconds = 10;
+      this.rebuildPlot();
+    },
+    fmtSize(bytes) {
+      if (bytes === null || bytes === undefined) return '';
+      const units = ['B', 'kB', 'MB', 'GB', 'TB'];
+      let v = bytes, i = 0;
+      while (v >= 1000 && i < units.length - 1) { v /= 1000; i++; }
+      return `${i ? v.toFixed(1) : v} ${units[i]}`;
+    },
+    fmtDuration(s) {
+      if (s === null || s === undefined) return '';
+      s = Math.round(s);
+      const h = Math.floor(s / 3600), m = Math.floor(s / 60) % 60;
+      return (h ? `${h}:${String(m).padStart(2, '0')}` : `${m}`) + `:${String(s % 60).padStart(2, '0')}`;
+    },
+    fmtDate(t) { return new Date(t * 1000).toLocaleString(undefined, { hour12: false }); },
 
     // --- Log ----------------------------------------------------------------------
 

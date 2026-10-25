@@ -7,19 +7,21 @@ import contextlib
 import threading
 import time
 from collections.abc import AsyncIterator
+from pathlib import Path
 from typing import Any
 
 
 class WebServer:
     """``cypilot.web`` on a free port, served by uvicorn on its own thread (as ``cypilot-ctl serve``)."""
 
-    def __init__(self, *, pin: str | None = None, lease_time: float = 0.5) -> None:
+    def __init__(self, *, pin: str | None = None, lease_time: float = 0.5, runs: Path | None = None) -> None:
         import uvicorn
 
         from cypilot.core.hub import BusHub
+        from cypilot.core.runs import RunStore
         from cypilot.web.app import create_app
 
-        self.hub = BusHub(lease_time=lease_time)
+        self.hub = BusHub(lease_time=lease_time, runs=RunStore(runs) if runs is not None else None)
         app = create_app(self.hub, pin=pin)
         hub = self.hub
 

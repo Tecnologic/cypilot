@@ -11,8 +11,7 @@ emergency stop or a trip, plot across nodes and take triggered scope shots.
 > `cypilot` work against the UNIMOC simulation: nodes with their state,
 > registers with units and help, settings profiles (CLI), enabling, setpoints,
 > stops and recovery, plots of several nodes on one time axis, cymon scope
-> captures, the simulation controls and the log. Recorded runs follow
-> ([docs/web_plan.md](docs/web_plan.md), W4). The plan is
+> captures, the simulation controls, the log and recorded runs. The plan is
 > [docs/plan.md](docs/plan.md); the web app replaced its Qt GUI.
 
 ## Install
@@ -142,11 +141,38 @@ bottom bar):
 - **Scope:** cymon captures with trigger and pre-trigger, CSV export.
 - **Simulation:** the virtual clock of a simulated drive (pause, run, advance,
   reset) and its plant inputs (`unimoc.sim.*`).
+- **Runs:** see below.
 - **Monitor:** any subject with any type, and publications with a lease.
 - **Log:** the `uavcan.diagnostic.Record` messages of all nodes.
 
 The REST and WebSocket API (`/api/...`, `/ws`) serves the UI and scripts
 alike.
+
+### Runs
+
+**● Record** in the header starts a run, **Stop** ends it; nothing else does.
+cypilot never records by itself, also not on enable or after a restart. Any
+client may record; the header of every client shows the run with its duration
+and size. A run holds everything on the bus while it goes:
+
+- `frames.log`: every CAN frame in the `candump -L` format (`canplayer`
+  replays it into `vcan0`);
+- `node<N>_<port>.csv`: the decoded subjects of every node (all published
+  ports with a `.type` register), with `recording.json` for the replay;
+- `capture<K>_node<N>.csv`: scope captures taken during the run;
+- `run.json`: start, end, interface, nodes with their info and a register
+  snapshot, and the markers (control, enable and disable, trips, E-stops,
+  STOP ALL, register writes, commands, captures and **Note**s).
+
+The **Runs** view lists the runs with name, start, duration, size and nodes;
+download a run as a zip or one of its files, replay it in the plots, rename
+it, edit its notes and delete it (with a confirmation, not while it records).
+Runs are kept in `--runs DIR` (default `$CYPILOT_RUNS`, else
+`~/.local/share/cypilot/runs` or `%LOCALAPPDATA%\cypilot\runs`); closed runs
+are packed into `data.zip`. Nothing is deleted automatically: the view warns
+below `--runs-warn` MB of free space, and a run stops below `--runs-stop` MB
+instead of filling the disk. A run that was recording when cypilot stopped
+is closed and kept at the next start.
 
 ### Safety
 
