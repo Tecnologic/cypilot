@@ -109,9 +109,20 @@ class _Setpoint:
 class Controller:
     """The readiness keep-alive and the setpoints of one session; runs on the session's loop."""
 
-    def __init__(self, session: Session, *, clock: Callable[[], float] = time.monotonic) -> None:
+    def __init__(
+        self,
+        session: Session,
+        *,
+        clock: Callable[[], float] = time.monotonic,
+        watchdog_timeout: float = WATCHDOG_TIMEOUT,
+        on_watchdog: Callable[[], None] | None = None,
+    ) -> None:
+        """``watchdog_timeout``: seconds without :meth:`feed` until the drives are put to sleep (the web
+        app uses its control lease time); ``on_watchdog`` is called when that happened."""
         self._session = session
         self._clock = clock
+        self.watchdog_timeout = watchdog_timeout
+        self._on_watchdog = on_watchdog
         self._publishers: dict[tuple[str, int], Any] = {}
         self._engaged: dict[int, DriveTarget] = {}
         self._standby: dict[int, tuple[DriveTarget, float]] = {}
@@ -139,7 +150,7 @@ class Controller:
         self._publishers.clear()
 
     def feed(self) -> None:
-        """The owner is alive; call at least every :data:`WATCHDOG_TIMEOUT` (thread-safe)."""
+        """The owner is alive; call at least every :attr:`watchdog_timeout` (thread-safe)."""
         self._last_feed = self._clock()
 
     @property
@@ -307,9 +318,11 @@ class Controller:
             await asyncio.sleep(KEEPALIVE_PERIOD)
             now = self._clock()
             step, last = now - last, now
-            if self._engaged and now - self._last_feed > WATCHDOG_TIMEOUT:
+            if self._engaged and now - self._last_feed > self.watchdog_timeout:
                 self.watchdog_tripped = True
                 await self.stop_all()
+                if self._on_watchdog is not None:
+                    self._on_watchdog()
                 continue
             for setpoint in self._setpoints.values():
                 _ramp(setpoint, step)

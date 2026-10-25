@@ -62,3 +62,27 @@ def test_emergency_stop_is_latched_until_the_restart(ctl: Ctl) -> None:
 
 def _drive_disabled(nodes: list[dict[str, object]]) -> bool:
     return any(n["node_id"] == DRIVE and n["state"] == ["disabled"] for n in nodes)
+
+
+def test_the_release_describes_every_register_of_the_drive(ctl: Ctl) -> None:
+    import os
+
+    import pytest
+
+    from cypilot.core.descriptions import load_descriptions
+    from cypilot.simulation import fetch_register_descriptions
+
+    if os.environ.get("CYPILOT_SIM_EXE"):
+        pytest.skip("the description file is that of the release, not of CYPILOT_SIM_EXE")
+    descriptions = load_descriptions(fetch_register_descriptions())
+    registers = {r["name"]: r for r in ctl.json("regs", str(DRIVE))}
+    unimoc = {name: r for name, r in registers.items() if name.startswith("unimoc.")}
+    assert unimoc and set(unimoc) <= set(descriptions.registers)
+    for name, register in unimoc.items():
+        description = descriptions.registers[name]
+        assert (description.type, description.mutable, description.persistent) == (
+            register["kind"],
+            register["mutable"],
+            register["persistent"],
+        ), name
+    assert descriptions.registers["unimoc.motor.limits.i_max"].unit == "A"

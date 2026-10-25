@@ -32,12 +32,12 @@ def test_types_with_and_without_a_version(dsdl: Path) -> None:
         load_type("nonexistent.Type")
 
 
-def test_the_demo_device_is_found_and_is_no_unimoc_node(dsdl: Path) -> None:
+def test_the_demo_device_passes_as_a_unimoc_drive(dsdl: Path) -> None:
     async def body() -> None:
         async with demo_bus() as (session, _):
             (node,) = session.nodes()
             assert node.node_id == DEVICE_ID and node.name == "org.tecnologic.cypilot.demo"
-            assert node.unimoc is False
+            assert node.unimoc is True and node.vendor_code == 0  # disabled
 
     run(body())
 

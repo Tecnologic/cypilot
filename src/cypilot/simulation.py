@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import collections
 import hashlib
+import os
 import re
 import subprocess
 import sys
@@ -36,19 +37,13 @@ class SimulationError(RuntimeError):
 
 def fetch_release(ref: str = DEFAULT_UNIMOC_REF) -> Path:
     """Downloads the ``native_sim`` binary of a UNIMOC release tag (checked against SHA256SUMS)."""
-    match = _TAG.match(ref)
-    if not match:
-        raise SimulationError(f"not a release tag: {ref!r} (expected v<major>.<minor>.<patch>)")
+    version = _version(ref)
     directory = cache_root() / "sim" / ref
     executable = directory / "unimoc-native_sim"
     if executable.exists():
         return executable
-    asset = f"unimoc-native_sim-{match.group(1)}.tar.gz"
-    archive = _get(f"{_RELEASES}/{ref}/{asset}")
-    sums = _get(f"{_RELEASES}/{ref}/SHA256SUMS").decode()
-    expected = next((line.split()[0] for line in sums.splitlines() if line.endswith(asset)), None)
-    if expected != hashlib.sha256(archive).hexdigest():
-        raise SimulationError(f"{asset} does not match SHA256SUMS of {ref}")
+    asset = f"unimoc-native_sim-{version}.tar.gz"
+    archive = _release_asset(ref, asset)
     directory.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(dir=directory) as temporary:
         path = Path(temporary) / asset
@@ -63,6 +58,35 @@ def fetch_release(ref: str = DEFAULT_UNIMOC_REF) -> Path:
             target.chmod(0o755)
             target.replace(executable)
     return executable
+
+
+def fetch_register_descriptions(ref: str = DEFAULT_UNIMOC_REF) -> Path:
+    """Downloads the register description file of a UNIMOC release tag (from v0.3.0 on)."""
+    version = _version(ref)
+    path = cache_root() / "sim" / ref / "registers.json"
+    if not path.exists():
+        data = _release_asset(ref, f"unimoc-registers-{version}.json")
+        path.parent.mkdir(parents=True, exist_ok=True)
+        temporary = path.with_suffix(f".{os.getpid()}.tmp")
+        temporary.write_bytes(data)
+        temporary.replace(path)
+    return path
+
+
+def _version(ref: str) -> str:
+    match = _TAG.match(ref)
+    if not match:
+        raise SimulationError(f"not a release tag: {ref!r} (expected v<major>.<minor>.<patch>)")
+    return match.group(1)
+
+
+def _release_asset(ref: str, asset: str) -> bytes:
+    data = _get(f"{_RELEASES}/{ref}/{asset}")
+    sums = _get(f"{_RELEASES}/{ref}/SHA256SUMS").decode()
+    expected = next((line.split()[0] for line in sums.splitlines() if line.endswith(asset)), None)
+    if expected != hashlib.sha256(data).hexdigest():
+        raise SimulationError(f"{asset} does not match SHA256SUMS of {ref}")
+    return data
 
 
 def _get(url: str) -> bytes:

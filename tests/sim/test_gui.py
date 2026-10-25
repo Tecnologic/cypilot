@@ -79,6 +79,9 @@ def test_control_enables_stops_all_and_the_watchdog_catches_a_frozen_ui(qapp: An
         wait_until(qapp, lambda: window.saw("STOP ALL: SLEEP sent to 10"))
         wait_until(qapp, lambda: state() == "disabled")
 
+        # The node table may show the stop before the control panel has it: a click on the still
+        # disabled button would be lost.
+        wait_until(qapp, window.control.enable_button.isEnabled)
         window.control.enable_button.click()
         wait_until(qapp, lambda: state() == "engaged")
         window.feed_timer.stop()  # as if the UI thread hung
