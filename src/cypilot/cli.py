@@ -253,6 +253,16 @@ def _parser() -> argparse.ArgumentParser:
         "--lease", type=float, default=0.5, help="control lease in seconds, 0.3 .. 1.0 (default 0.5)"
     )
     serve.add_argument("--demo", type=int, default=0, metavar="N", help="start with N demo devices")
+    serve.add_argument(
+        "--runs",
+        type=Path,
+        metavar="DIR",
+        help="where runs are recorded (default: $CYPILOT_RUNS or the user data dir)",
+    )
+    serve.add_argument("--runs-warn", type=int, default=1024, metavar="MB", help="warn below this free space")
+    serve.add_argument(
+        "--runs-stop", type=int, default=200, metavar="MB", help="a recording run stops below this free space"
+    )
     serve.add_argument("--open", action="store_true", help="open the web UI in the browser")
     serve.set_defaults(handler=_cmd_serve)
 
@@ -794,6 +804,7 @@ def _cmd_serve(args: argparse.Namespace) -> int:
     from fastapi import FastAPI
 
     from cypilot.core.hub import BusConfig, BusHub
+    from cypilot.core.runs import RunLimits, RunStore
     from cypilot.web.app import create_app
 
     texts = args.interface or [
@@ -813,7 +824,8 @@ def _cmd_serve(args: argparse.Namespace) -> int:
     if pin is None and not _loopback(args.host):
         pin = f"{secrets.randbelow(10**6):06d}"
     ensure_dsdl()
-    hub = BusHub(lease_time=args.lease)
+    limits = RunLimits(warn_free=args.runs_warn << 20, stop_free=args.runs_stop << 20)
+    hub = BusHub(lease_time=args.lease, runs=RunStore(args.runs, limits))
     app = create_app(hub, pin=pin)
     url = f"http://{'localhost' if _loopback(args.host) else args.host}:{args.port}/"
 
@@ -825,6 +837,8 @@ def _cmd_serve(args: argparse.Namespace) -> int:
             except Exception as error:  # the server runs; connect again from the UI
                 print(f"cypilot-ctl: cannot connect: {error}", file=sys.stderr)
         print(f"cypilot on {url}" + (f"  PIN {pin}" if pin else ""), flush=True)
+        assert hub.runs is not None
+        print(f"runs in {hub.runs.root}", flush=True)
         if args.open:
             webbrowser.open(url)
         try:

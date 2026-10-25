@@ -20,7 +20,9 @@ changes.
   (`canable.py`), the event hub (`events.py`), monitoring any subject and
   publications with a lease (`subjects.py`), cymon captures (`scope.py`),
   the bus hub of the web server with the control lease (`hub.py`), the
-  UNIMOC register description file (`descriptions.py`).
+  UNIMOC register description file (`descriptions.py`), runs on disk
+  (`runs.py`) and their recording from the bus (`recording.py`). A run starts
+  and stops only on a request of the user.
   **No web or UI import in `core/`.**
 - `src/cypilot/demo.py`: simulated device (registers, telemetry, readiness,
   cymon services) for tests on a python-can virtual bus without the UNIMOC
