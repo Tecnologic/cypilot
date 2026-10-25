@@ -6,6 +6,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 from pathlib import Path
+from typing import Any
 
 import httpx
 
@@ -34,8 +35,19 @@ def test_operator_enables_sets_a_setpoint_and_the_lease_lapse_stops_the_drive(
     sim: SimInstance, dsdl: Path
 ) -> None:
     async def go() -> None:
-        hub = BusHub(lease_time=0.5)
+        # The longest lease (1 s): a runner that stalls the loop for 0.5 s would trip the watchdog.
+        hub = BusHub(lease_time=1.0)
         transport = httpx.ASGITransport(app=create_app(hub))
+        events: list[dict[str, Any]] = []
+
+        async def watch() -> None:
+            async with hub.events.listen() as queue:
+                while True:
+                    event = await queue.get()
+                    if event["kind"] in ("control", "stop", "log"):
+                        events.append(event)
+
+        watcher = asyncio.create_task(watch())
         try:
             async with httpx.AsyncClient(transport=transport, base_url="http://cypilot") as client:
                 connect = await client.post("/api/connect", json={"interfaces": [sim.slcan_interfaces[0]]})
@@ -59,14 +71,16 @@ def test_operator_enables_sets_a_setpoint_and_the_lease_lapse_stops_the_drive(
                 assert (await client.post("/api/stop")).json()["stopped"] == [DRIVE]
                 assert await _wait(hub, engaged=False)
 
-                await client.post(f"/api/nodes/{DRIVE}/enable", headers=OPERATOR)
-                assert await _wait(hub, engaged=True)
+                again = await client.post(f"/api/nodes/{DRIVE}/enable", headers=OPERATOR)
+                assert again.status_code == 200, (again.text, events)
+                assert await _wait(hub, engaged=True), events
                 renewer.cancel()
                 with contextlib.suppress(asyncio.CancelledError):
                     await renewer
                 assert await _wait(hub, engaged=False)  # the lease lapsed
                 assert hub.control_state()["operator"] is None
         finally:
+            watcher.cancel()
             await hub.close()
 
     asyncio.run(go())
