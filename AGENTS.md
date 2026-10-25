@@ -36,6 +36,9 @@ changes.
   `app.css`; Alpine.js and uPlot vendored in `static/vendor/`, no build step).
   Tests: `tests/unit/test_web.py` (API), `tests/browser/` (Playwright with the
   `browser` fixture and `tests/web_support.py`).
+- `scripts/pi-setup.sh`: the Raspberry Pi on the cart ([docs/pi.md](docs/pi.md));
+  `tests/unit/test_pi_setup.py` runs its dry run. `scripts/load_test.py`: the
+  load test of the web app.
 - `tests/unit/`: no bus. `tests/browser/`: the web UI against demo devices.
   `tests/sim/`: against the released simulation (Linux).
 

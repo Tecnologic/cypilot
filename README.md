@@ -116,7 +116,7 @@ pending` and `local control`, decoded from the heartbeat of UNIMOC nodes.
 cypilot                                            # http://localhost:8765/ in the browser
 cypilot --demo 2                                   # two demo devices, no hardware
 cypilot-ctl -i socketcan:can0 serve                # the server alone; API docs at /docs
-cypilot-ctl -i canable:/dev/ttyACM0 serve --host 0.0.0.0  # for phones and tablets; prints a PIN
+cypilot-ctl -i canable:/dev/ttyACM0 serve --host 0.0.0.0  # for phones and tablets; prints a PIN ($CYPILOT_PIN)
 ```
 
 One page for the laptop, the tablet and the phone (there the views move to a
@@ -202,6 +202,13 @@ Within that:
   another node (a VDC) publishes on the drive's readiness subject.
 - **Recover** acknowledges a latched trip with `STANDBY`, or restarts a drive
   whose emergency stop is latched (allow the restart first).
+
+## On a Raspberry Pi
+
+`sudo scripts/pi-setup.sh` sets up a Pi with an MCP2518FD CAN FD HAT as the
+box on the cart: `can0`, the web app as a service on port 80 with a PIN, runs
+on the SSD, and Wi-Fi on a known network or the Pi's own access point. See
+[docs/pi.md](docs/pi.md).
 
 ## Against the simulation
 

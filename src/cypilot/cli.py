@@ -247,7 +247,9 @@ def _parser() -> argparse.ArgumentParser:
     serve.add_argument("--host", default="127.0.0.1", help="address to listen on; 0.0.0.0 for the network")
     serve.add_argument("--port", type=int, default=8765)
     serve.add_argument(
-        "--pin", help="PIN for the login; generated and printed when listening beyond this computer"
+        "--pin",
+        default=os.environ.get("CYPILOT_PIN") or None,
+        help="PIN for the login (default $CYPILOT_PIN); generated when listening beyond this computer",
     )
     serve.add_argument(
         "--lease", type=float, default=0.5, help="control lease in seconds, 0.3 .. 1.0 (default 0.5)"
