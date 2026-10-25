@@ -21,13 +21,21 @@ def terse(*fields: Any) -> str:
 
 
 def main(args: list[str]) -> int:
+    import fcntl
+
     path = Path(os.environ["FAKE_NMCLI_STATE"])
-    state: dict[str, Any] = json.loads(path.read_text())
-    state.setdefault("calls", []).append(args)
-    try:
-        return run(state, args)
-    finally:
-        path.write_text(json.dumps(state))
+    # One call at a time, as NetworkManager does: the web app runs several nmcli calls at once,
+    # and an unlocked read and write back would undo the change of another call.
+    with path.with_suffix(".lock").open("w") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        state: dict[str, Any] = json.loads(path.read_text())
+        state.setdefault("calls", []).append(args)
+        try:
+            return run(state, args)
+        finally:
+            temporary = path.with_suffix(".tmp")
+            temporary.write_text(json.dumps(state))
+            temporary.replace(path)  # readers (the tests) never see a half-written file
 
 
 def run(state: dict[str, Any], args: list[str]) -> int:
