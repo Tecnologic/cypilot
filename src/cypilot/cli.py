@@ -33,7 +33,7 @@ from cypilot.core.registers import Register, RegisterError, parse_like
 from cypilot.core.session import DEFAULT_LOCAL_NODE_ID, NodeSummary, Session
 from cypilot.core.signals import Recorder, SignalError, sources, subscribe
 from cypilot.core.sim_control import SimControl, SimStatus, SimulationError
-from cypilot.core.transport import InterfaceError, parse_interface
+from cypilot.core.transport import InterfaceError, find_adapters, parse_interfaces
 from cypilot.dsdl import DsdlError, DsdlSource, ensure_dsdl
 
 COMMANDS = {
@@ -90,9 +90,9 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "-i",
         "--interface",
-        default=os.environ.get("CYPILOT_IFACE") or os.environ.get("UAVCAN__CAN__IFACE"),
-        help="CAN interface, e.g. socketcan:vcan0, slcan:/dev/pts/3, slcan:COM5, pcan:PCAN_USBBUS1 "
-        "(default: $CYPILOT_IFACE, then $UAVCAN__CAN__IFACE)",
+        action="append",
+        help="interface, e.g. socketcan:vcan0, canable:COM5, slcan:/dev/pts/3, pcan:PCAN_USBBUS1, "
+        "udp:127.0.0.1; repeat it for a redundant bus (default: $CYPILOT_IFACE, then $UAVCAN__CAN__IFACE)",
     )
     parser.add_argument("--mtu", type=int, help="CAN MTU: 8 (classic) or 64 (CAN FD, the default but slcan)")
     parser.add_argument("--bitrate", type=_bitrate, help="bit rates for adapters that need them: ARB[/DATA]")
@@ -102,8 +102,16 @@ def _parser() -> argparse.ArgumentParser:
         default=DEFAULT_LOCAL_NODE_ID,
         help=f"node-ID of cypilot on the bus (default {DEFAULT_LOCAL_NODE_ID})",
     )
+    parser.add_argument(
+        "--pnp",
+        metavar="DB",
+        help="run a plug-and-play node-ID allocator with this database file (e.g. cypilot-pnp.db)",
+    )
     parser.add_argument("--json", action="store_true", help="machine-readable output")
     commands = parser.add_subparsers(dest="command", required=True)
+
+    adapters = commands.add_parser("adapters", help="list the CAN adapters connected to this computer")
+    adapters.set_defaults(handler=_cmd_adapters)
 
     nodes = commands.add_parser("nodes", help="list the nodes of the bus with their state")
     nodes.add_argument("--wait", type=float, default=2.0, help="seconds to listen (default 2)")
@@ -218,10 +226,20 @@ def _bitrate(text: str) -> tuple[int, int]:
 
 
 def _session(args: argparse.Namespace) -> Session:
-    if not args.interface:
+    texts = args.interface or [
+        text for text in (os.environ.get("CYPILOT_IFACE") or os.environ.get("UAVCAN__CAN__IFACE"),) if text
+    ]
+    if not texts:
         raise InterfaceError("no interface: pass -i/--interface or set CYPILOT_IFACE")
-    spec = parse_interface(args.interface, mtu=args.mtu, bitrate=args.bitrate)
-    return Session(spec, local_node_id=args.local_node_id)
+    specs = parse_interfaces(texts, mtu=args.mtu, bitrate=args.bitrate)
+    return Session(specs, local_node_id=args.local_node_id, pnp_database=args.pnp)
+
+
+def _cmd_adapters(args: argparse.Namespace) -> int:
+    found = find_adapters()
+    lines = [f"{a.interface:28} {a.description}" for a in found] or ["no CAN adapter found"]
+    _print(args, [vars(a) for a in found], "\n".join(lines))
+    return 0
 
 
 def _print(args: argparse.Namespace, data: Any, text: str) -> None:

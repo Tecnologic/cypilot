@@ -22,7 +22,7 @@ classifiers = [
     "Topic :: Scientific/Engineering",
 ]
 dependencies = [
-    "pycyphal[transport-can-pythoncan]~=1.27",
+    "pycyphal[transport-can-pythoncan,transport-udp]~=1.27",
     "pyserial~=3.5",
 ]
 
@@ -43,6 +43,10 @@ cypilot-ctl = "cypilot.cli:main"
 
 [project.gui-scripts]
 cypilot = "cypilot.ui.app:main"
+
+# python-can plugin: the interface "canable" (CANable 2.0 slcan firmware in CAN FD mode).
+[project.entry-points."can.interface"]
+canable = "cypilot.core.canable:CanableBus"
 
 [project.urls]
 Repository = "https://github.com/Tecnologic/cypilot"

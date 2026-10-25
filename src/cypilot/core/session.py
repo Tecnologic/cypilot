@@ -10,7 +10,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from types import TracebackType
 from typing import Any
@@ -19,7 +19,7 @@ from cypilot import __version__
 from cypilot.core.capabilities import PortList
 from cypilot.core.registers import RegisterClient, RegisterError
 from cypilot.core.status import Chip, Health, Mode, chips
-from cypilot.core.transport import InterfaceSpec, make_transport
+from cypilot.core.transport import InterfaceSpec, describe, make_transport
 from cypilot.dsdl import ensure_dsdl
 
 DEFAULT_LOCAL_NODE_ID = 127
@@ -74,11 +74,26 @@ class NodeSummary:
 
 
 class Session:
-    """``async with Session(spec) as session:`` opens the interface and starts discovery."""
+    """``async with Session(spec) as session:`` opens the interface and starts discovery.
 
-    def __init__(self, interface: InterfaceSpec, local_node_id: int = DEFAULT_LOCAL_NODE_ID) -> None:
-        self.interface = interface
+    Several interfaces form one redundant bus. With ``pnp_database`` the session
+    also runs a plug-and-play node-ID allocator (pycyphal's centralized one,
+    persisted in that SQLite file).
+    """
+
+    def __init__(
+        self,
+        interface: InterfaceSpec | Sequence[InterfaceSpec],
+        local_node_id: int = DEFAULT_LOCAL_NODE_ID,
+        *,
+        pnp_database: str | None = None,
+    ) -> None:
+        self.interfaces = [interface] if isinstance(interface, InterfaceSpec) else list(interface)
+        self.interface = self.interfaces[0]
+        """The first interface (the only one without redundancy)."""
         self.local_node_id = local_node_id
+        self.pnp_database = pnp_database
+        self._allocator: Any = None
         self._node: Any = None
         self._tracker: Any = None
         self._changed = asyncio.Event()
@@ -108,10 +123,18 @@ class Session:
         info = uavcan.node.GetInfo_1_0.Response(
             software_version=uavcan.node.Version_1_0(major=major, minor=minor), name=NODE_NAME
         )
-        transport = make_transport(self.interface, self.local_node_id)
+        transport = make_transport(self.interfaces, self.local_node_id)
         registry = pycyphal.application.make_registry(environment_variables={})
-        self._node = pycyphal.application.make_node(info, registry=registry, transport=transport)
+        try:
+            self._node = pycyphal.application.make_node(info, registry=registry, transport=transport)
+        except Exception:
+            transport.close()
+            raise
         self._node.start()
+        if self.pnp_database is not None:
+            from pycyphal.application.plug_and_play import CentralizedAllocator
+
+            self._allocator = CentralizedAllocator(self._node, self.pnp_database)
         self._tracker = pycyphal.application.node_tracker.NodeTracker(self._node)
         self._tracker.add_update_handler(self._on_update)
         port_list = self._node.make_subscriber(uavcan.node.port.List_1_0)
@@ -124,9 +147,19 @@ class Session:
             task.cancel()
         self._probes.clear()
         if self._node is not None:
+            self._allocator = None  # closes with the node
             self._node.close()
             self._node = None
             await asyncio.sleep(0.2)  # lets the media threads of python-can stop
+
+    def describe(self) -> str:
+        """The interfaces with their bit rates, e.g. ``canable:COM5 (1000 kbit/s, ...)``."""
+        return describe(self.interfaces)
+
+    @property
+    def pnp(self) -> bool:
+        """True while the session runs the plug-and-play allocator."""
+        return self._allocator is not None
 
     @property
     def node(self) -> Any:
