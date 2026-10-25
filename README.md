@@ -33,6 +33,7 @@ repository, or to the path of a local `unimoc` checkout in its west workspace:
 
 ```sh
 export CYPILOT_UNIMOC=v0.2.0                      # a UNIMOC release (default)
+export CYPILOT_DSDL=~/vdc/dsdl/vdc                # extra root namespaces of other projects (os.pathsep list)
 export CYPILOT_UNIMOC=~/unimoc-ws/unimoc          # a local west workspace
 cypilot-ctl dsdl                                  # fetch and compile now
 ```
@@ -44,10 +45,21 @@ The interface text follows yakut (`UAVCAN__CAN__IFACE`):
 | Interface | Linux | Windows | Use |
 |---|---|---|---|
 | `socketcan:vcan0` | yes | — | Simulation cluster (CAN FD) |
-| `socketcan:can0` | yes | — | CAN FD adapter with a kernel driver |
+| `socketcan:can0` | yes | — | CAN FD adapter with a kernel driver (candleLight, a Raspberry Pi CAN FD HAT) |
+| `canable:/dev/ttyACM0`, `canable:COM5` | yes | yes | CANable 2.0 (Pro) with the slcan firmware in **CAN FD** mode |
 | `slcan:/dev/pts/N` | yes | — | One simulated drive over its pseudo terminal (classic CAN) |
-| `slcan:/dev/ttyACM0`, `slcan:COM5` | yes | yes | CANable with slcan firmware (classic CAN) |
+| `slcan:/dev/ttyACM0`, `slcan:COM5` | yes | yes | slcan adapters in classic CAN |
 | `pcan:PCAN_USBBUS1`, `gs_usb:0`, ... | yes | yes | python-can adapters (CAN FD by default) |
+| `udp:127.0.0.1` | yes | yes | Cyphal/UDP on the local interface with this address |
+| `virtual:demo` | yes | yes | python-can's in-process bus (demo devices, tests) |
+
+Repeat `-i` (or separate interfaces by spaces, as in yakut's
+`UAVCAN__CAN__IFACE`) for a **redundant bus**: every transfer goes out on all
+of them, duplicates are dropped on reception. `cypilot-ctl adapters` lists the
+CANable serial ports and the SocketCAN interfaces of this computer.
+`--pnp cypilot-pnp.db` runs a plug-and-play node-ID allocator. The CANable's
+CAN FD data rate is `--bitrate 1000000/2000000` (or `/5000000`); without a data
+rate it sends FD frames without bit rate switch, as the UNIMOC BCC needs.
 
 `--mtu 8` forces classic CAN, `--bitrate 1000000/4000000` sets the
 arbitration and data bit rate for adapters that need them. cypilot is node 127
@@ -74,6 +86,9 @@ cypilot-ctl recover 10                            # STANDBY clears a trip; --res
 cypilot-ctl sim 10 pause                          # simulated drive: status, pause, run, advance N, reset
 cypilot-ctl sim 10 advance 16000                  # one second of virtual time, as fast as it runs
 cypilot-ctl record 10 telemetry --for 5 --out rec # subjects of node 10 into rec/*.csv and recording.json
+cypilot-ctl monitor 212 unimoc.drive.Telemetry    # any subject with any DSDL type, for --for seconds
+cypilot-ctl scope 10                              # cymon trace variables of node 10
+cypilot-ctl scope 10 0 1 --samples 500 --trigger rising --level 2 --pretrigger 100 --out shot.csv
 ```
 
 ### Settings profiles

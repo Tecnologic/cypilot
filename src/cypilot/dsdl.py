@@ -11,6 +11,10 @@ pycyphal (about a minute on the first run).
 Select the source with ``CYPILOT_UNIMOC``: a git ref of
 https://github.com/Tecnologic/unimoc (default :data:`DEFAULT_UNIMOC_REF`) or
 the path of a local ``unimoc`` checkout inside its west workspace.
+
+Other projects' root namespaces (a VDC, a BMS, any Cyphal node) are added with
+``CYPILOT_DSDL``: directories of root namespaces separated by ``os.pathsep``
+(``:`` on Linux, ``;`` on Windows), compiled against the standard ones.
 """
 
 from __future__ import annotations
@@ -24,6 +28,7 @@ import shutil
 import sys
 import tarfile
 import urllib.request
+from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 
@@ -81,12 +86,14 @@ def cache_root() -> Path:
     return base / "cypilot"
 
 
-def ensure_dsdl(source: DsdlSource | None = None) -> Path:
+def ensure_dsdl(source: DsdlSource | None = None, extra_roots: Sequence[str | Path] | None = None) -> Path:
     """Makes the compiled DSDL importable and returns its directory.
 
     Downloads and compiles on the first call for a source; later calls only put
     the compiled packages on ``sys.path``. A local checkout is recompiled when one
-    of its ``.dsdl`` files is newer than the last compilation.
+    of its ``.dsdl`` files is newer than the last compilation. ``extra_roots``
+    (default ``CYPILOT_DSDL``) are compiled into a directory of their own, keyed
+    by their content.
     """
     source = source or DsdlSource.from_environment()
     base = cache_root() / "dsdl" / source.key
@@ -109,7 +116,38 @@ def ensure_dsdl(source: DsdlSource | None = None) -> Path:
 
     if str(compiled) not in sys.path:
         sys.path.insert(0, str(compiled))
+    if extra_roots is None:
+        extra_roots = [part for part in os.environ.get("CYPILOT_DSDL", "").split(os.pathsep) if part.strip()]
+    if extra_roots:
+        standard = _local_roots(source.unimoc_path) if source.unimoc_path else _ref_roots(sources)
+        extra = _extra_dsdl(standard, [Path(root).expanduser().resolve() for root in extra_roots])
+        if str(extra) not in sys.path:
+            sys.path.insert(0, str(extra))
     return compiled
+
+
+def _ref_roots(sources: Path) -> dict[str, Path]:
+    return {name: sources / name for name in NAMESPACES}
+
+
+def _extra_dsdl(standard: dict[str, Path], roots: list[Path]) -> Path:
+    for root in roots:
+        if not root.is_dir() or not any(root.rglob("*.dsdl")):
+            raise DsdlError(f"{root} is no DSDL root namespace (a directory with .dsdl files)")
+        if root.name in standard:
+            raise DsdlError(f"the root namespace {root.name} is part of the UNIMOC DSDL already")
+    names = [root.name for root in roots]
+    if len(set(names)) != len(names):
+        raise DsdlError(f"a root namespace is given twice: {', '.join(names)}")
+    digest = hashlib.sha256()
+    for root in sorted(roots):
+        for path in sorted(root.rglob("*.dsdl")):
+            digest.update(str(path.relative_to(root.parent)).encode())
+            digest.update(path.read_bytes())
+    output = cache_root() / "dsdl" / f"extra-{digest.hexdigest()[:16]}"
+    if not (output / ".complete").exists():
+        _compile({**standard, **{root.name: root for root in roots}}, output, only=names)
+    return output
 
 
 def _local_roots(unimoc: Path) -> dict[str, Path]:
@@ -129,19 +167,33 @@ def _local_roots(unimoc: Path) -> dict[str, Path]:
     return roots
 
 
-def _compile(roots: dict[str, Path], output: Path) -> None:
+def _compile(roots: dict[str, Path], output: Path, only: Sequence[str] = NAMESPACES) -> None:
+    """Compiles the namespaces ``only`` of ``roots`` (all of them the lookup) into ``output``.
+
+    Each process compiles into a directory of its own and moves it into place
+    at the end, so two cypilot processes that start at once do not delete each
+    other's files.
+    """
     import pycyphal.dsdl  # slow, only when compiling
 
-    if output.exists():
-        shutil.rmtree(output)
-    output.mkdir(parents=True)
+    work = output.with_name(f"{output.name}.tmp-{os.getpid()}")
+    if work.exists():
+        shutil.rmtree(work)
+    work.mkdir(parents=True)
     lookup: list[str | Path] = list(roots.values())
     try:
-        for name in NAMESPACES:
-            pycyphal.dsdl.compile(roots[name], lookup, output)
+        for name in only:
+            pycyphal.dsdl.compile(roots[name], lookup, work)
     except Exception as error:  # pydsdl and nunavut raise many types
+        shutil.rmtree(work, ignore_errors=True)
         raise DsdlError(f"DSDL compilation failed: {error}") from error
-    (output / ".complete").touch()
+    (work / ".complete").touch()
+    if output.exists():
+        shutil.rmtree(output, ignore_errors=True)
+    try:
+        work.rename(output)
+    except OSError:  # another process moved its result into place first
+        shutil.rmtree(work, ignore_errors=True)
 
 
 # --- Download ------------------------------------------------------------------

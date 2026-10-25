@@ -14,7 +14,13 @@ in Python on pycyphal. The plan, the decisions and the phases are in
   settings profiles (`profiles.py`), enabling, setpoints, stop all, the
   watchdog and recovery (`control.py`), the simulation controls
   (`sim_control.py`), subjects as channels with the recorder, export and
-  replay (`signals.py`). **No Qt import in `core/`.**
+  replay (`signals.py`), and from the cymon tool: the CANable FD bus
+  (`canable.py`), the event hub (`events.py`), monitoring any subject and
+  publications with a lease (`subjects.py`), cymon captures (`scope.py`).
+  **No Qt import in `core/`.**
+- `src/cypilot/demo.py`: simulated device (registers, telemetry, readiness,
+  cymon services) for tests on a python-can virtual bus without the UNIMOC
+  simulation (`tests/unit/demo_bus.py`).
 - `src/cypilot/dsdl.py`: downloads and compiles the DSDL of the pinned UNIMOC
   release (`DEFAULT_UNIMOC_REF`) or a local checkout (`CYPILOT_UNIMOC`).
 - `src/cypilot/simulation.py`: fetches and runs the UNIMOC `native_sim` drive.

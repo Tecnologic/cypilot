@@ -61,24 +61,56 @@ def sources(registers: Iterable[Register], node_id: int) -> list[Source]:
 
 
 def load_type(type_name: str) -> Any:
-    """The compiled class of ``ns.sub.Type.major.minor`` (the DSDL must be on ``sys.path``)."""
-    parts = type_name.split(".")
-    if len(parts) < 4 or not parts[-1].isdigit() or not parts[-2].isdigit():
-        raise SignalError(f"not a versioned DSDL type name: {type_name!r}")
-    module_name, short, major, minor = ".".join(parts[:-3]), parts[-3], parts[-2], parts[-1]
+    """The compiled class of ``ns.sub.Type.major.minor`` (the DSDL must be on ``sys.path``).
+
+    Without a version (``uavcan.node.Heartbeat``) the newest compiled version.
+    """
+    parts = type_name.strip().split(".")
+    versioned = len(parts) >= 4 and parts[-1].isdigit() and parts[-2].isdigit()
+    if not versioned and len(parts) < 2:
+        raise SignalError(f"not a DSDL type name: {type_name!r}")
+    module_name = ".".join(parts[:-3] if versioned else parts[:-1])
+    short = parts[-3] if versioned else parts[-1]
     try:
         module = importlib.import_module(module_name)
-        return getattr(module, f"{short}_{major}_{minor}")
-    except (ImportError, AttributeError) as error:
-        raise SignalError(f"no compiled DSDL type {type_name}") from error
+    except ImportError as error:
+        raise SignalError(f"no compiled DSDL namespace {module_name}") from error
+    if versioned:
+        found = getattr(module, f"{short}_{parts[-2]}_{parts[-1]}", None)
+    else:
+        versions = [
+            name
+            for name in dir(module)
+            if name.startswith(short + "_") and name[len(short) + 1 :].replace("_", "").isdigit()
+        ]
+        newest = max(
+            versions, key=lambda name: tuple(int(v) for v in name[len(short) + 1 :].split("_")), default=None
+        )
+        found = getattr(module, newest) if newest else None
+    if found is None:
+        raise SignalError(f"no compiled DSDL type {type_name}")
+    return found
+
+
+def type_name(data_type: Any) -> str:
+    """``unimoc.drive.Telemetry.0.1`` of a compiled class."""
+    import pycyphal.dsdl
+
+    model = pycyphal.dsdl.get_model(data_type)
+    return f"{model.full_name}.{model.version.major}.{model.version.minor}"
 
 
 def flatten(message: Any) -> dict[str, float]:
     """The numeric fields of a message as ``{name: value}``; arrays as ``name[i]``, nested as ``a.b``."""
     import pycyphal.dsdl
 
+    return flatten_builtin(pycyphal.dsdl.to_builtin(message))
+
+
+def flatten_builtin(value: Any) -> dict[str, float]:
+    """:func:`flatten` of a message already converted with ``pycyphal.dsdl.to_builtin``."""
     result: dict[str, float] = {}
-    _flatten(pycyphal.dsdl.to_builtin(message), "", result)
+    _flatten(value, "", result)
     return result
 
 
