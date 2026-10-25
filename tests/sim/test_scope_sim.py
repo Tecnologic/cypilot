@@ -35,18 +35,19 @@ class Bridge:
 
     def __init__(self, a: str, b: str) -> None:
         self.buses = [can.Bus(interface="slcan", channel=path, bitrate=1_000_000) for path in (a, b)]
+        self.relayed = [0, 0]
+        """Frames relayed from a to b and from b to a."""
         self._stop = threading.Event()
-        self._threads = [
-            threading.Thread(target=self._relay, args=(self.buses[i], self.buses[1 - i]), daemon=True)
-            for i in (0, 1)
-        ]
+        self._threads = [threading.Thread(target=self._relay, args=(i,), daemon=True) for i in (0, 1)]
 
-    def _relay(self, source: Any, target: Any) -> None:
+    def _relay(self, index: int) -> None:
+        source, target = self.buses[index], self.buses[1 - index]
         while not self._stop.is_set():
             message = source.recv(0.05)
             if message is not None:
                 with contextlib.suppress(can.CanError):
                     target.send(message)
+                    self.relayed[index] += 1
 
     def __enter__(self) -> Bridge:
         for thread in self._threads:
@@ -56,7 +57,8 @@ class Bridge:
     def __exit__(self, *_: Any) -> None:
         self._stop.set()
         for thread in self._threads:
-            thread.join(2)
+            if thread.ident is not None:  # started
+                thread.join(2)
         for bus in self.buses:
             bus.shutdown()
 
@@ -108,8 +110,10 @@ def test_two_drives_on_one_trigger(drives: tuple[SimInstance, SimInstance]) -> N
                 response = await client.post("/api/connect", json={"interfaces": [first.slcan_interfaces[0]]})
                 assert response.status_code == 200, response.text
                 session = hub.require_session()
-                # Slow on CI: both drives over one classic slcan terminal (the other tests wait 30 s too).
+                # First the drive on cypilot's own terminal, then the other one over the bridge (slow on
+                # CI: both drives over one classic slcan terminal; the other tests wait 30 s too).
                 await session.wait_for_node(10, timeout=30)
+                bridge.__enter__()
                 await session.wait_for_node(11, timeout=30)
 
                 subscriber = session.node.make_subscriber(cymon.TriggerEvent_0_1, TRIGGER)
@@ -138,17 +142,23 @@ def test_two_drives_on_one_trigger(drives: tuple[SimInstance, SimInstance]) -> N
                 assert all(len(c["t"]) == 50 and c["t"][10] == 0.0 for c in captures.values())
                 await asyncio.sleep(0.5)
                 subscriber.close()
+        except BaseException:
+            seen = [(n["node_id"], n["name"]) for n in hub.nodes()] if hub.connected else "not connected"
+            print(f"--- cypilot saw {seen}; the bridge relayed {bridge.relayed} frames")
+            raise
         finally:
             await hub.close()
 
     terminals = [instance.slcan_interfaces[-1].removeprefix("slcan:") for instance in (first, second)]
-    with Bridge(*terminals):
-        try:
-            asyncio.run(body())
-        except BaseException:
-            for instance in (first, second):
-                print(f"--- output of drive {instance.node_id}:", *list(instance.output)[-30:], sep="\n")
-            raise
+    bridge = Bridge(*terminals)
+    try:
+        asyncio.run(body())
+    except BaseException:
+        for instance in (first, second):
+            print(f"--- output of drive {instance.node_id}:", *list(instance.output)[-30:], sep="\n")
+        raise
+    finally:
+        bridge.__exit__()
     times = dict(events)
     assert {10, 11} <= set(times), events  # the follower published its own event when the trigger reached it
     delay = times[11] - times[10]
