@@ -48,7 +48,7 @@ the core and stays; the views are rebuilt in the web UI.
 
 | # | Question | Proposal | Why |
 |---|---|---|---|
-| 1 | Which repository and name | **cypilot** is the app; the cymon features move in. The `cymon` name stays with **cymon-lib** (the firmware library and the `cymon` DSDL). `Tecnologic/cymon` gets a last release that points to cypilot, then is archived | cypilot has the larger core, the UNIMOC contract, CI against the released simulation and Apache-2.0; two things called cymon (host tool and firmware library) confuse already |
+| 1 | Which repository and name | **Decided 2026-10-25: cypilot** is the app (the tool does more than monitoring). The cymon features move in; `Tecnologic/cymon` gets a last release that points to cypilot, then is archived. The firmware library **cymon-lib** and its `cymon` DSDL keep their names (UNIMOC depends on them) | cypilot has the larger core, the UNIMOC contract, CI against the released simulation and Apache-2.0 |
 | 2 | License of the merged code | **Decided 2026-10-25: Apache-2.0** for all of it; cymon's code is relicensed when it moves | The cymon code is the owner's (with AI-generated parts), so it can be relicensed. The AGPL would also apply to a Pi on the cart that serves the UI over the network: every user would have to be offered the source |
 | 3 | Qt GUI | **Removed** once the web UI has the G2 to G4 functions (W3); until then it stays as it is, without new features | One UI to maintain; no PySide6 and Qt bundles on Windows and the Pi |
 | 4 | Front-end technology | **cymon's**: static HTML, Alpine.js, uPlot, vendored, no Node.js build step | Works offline on the cart, small enough for a Pi, already tested; a build step can come later if the UI grows past what Alpine handles well |
