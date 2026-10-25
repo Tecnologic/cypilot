@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import asyncio
+import gc
 import io
 import json
 import zipfile
@@ -83,7 +84,9 @@ def test_a_run_left_recording_is_closed_and_kept(tmp_path: Path) -> None:
     store = RunStore(tmp_path)
     run = store.start("crash")
     run.sample(Source(10, "telemetry", 1000, "x.Y.1.0"), 5.0, {"a": 1.0})
-    run.flush()  # cypilot stops here without stop()
+    run.flush()  # cypilot stops here without stop() ...
+    del run, store  # ... and its open files go with the process (Windows keeps open files from deletion)
+    gc.collect()
     again = RunStore(tmp_path)
     (summary,) = again.summaries()
     assert summary["state"] == "closed" and summary["stop_reason"] == "cypilot stopped while recording"
