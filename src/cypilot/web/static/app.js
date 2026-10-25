@@ -132,8 +132,9 @@ window.cypilot = function () {
     pubForm: { subject_id: null, type: '', rate_hz: 10, lease_s: 1, value: '{}' },
     publications: [],
     scope: {
-      info: null, error: '', channels: [], period: 100, samples: 200, pretrigger: 20,
-      mode: 'immediate', source: 0, level: 0, band: 0, busy: false, state: '', result: null,
+      infos: {}, picked: {}, trigger_node: 0, shared: null, loading: false, periodSet: false,
+      period: 100, samples: 200, pretrigger: 20, mode: 'immediate', source: 0, level: 0, band: 0,
+      busy: false, state: '', result: null,
     },
     sim: { status: null, error: '', cycles: 16000 },
     log: [],
@@ -205,7 +206,7 @@ window.cypilot = function () {
       const newConnection = status.connected && old?.connection !== status.connection;
       if (!status.connected || newConnection) {
         this.nodes = []; this.registers = []; this.target = null; this.publications = [];
-        this.plotSources = []; this.dropAllChannels(); this.scope.info = null; this.sim.status = null;
+        this.plotSources = []; this.dropAllChannels(); this.scope.infos = {}; this.scope.picked = {}; this.sim.status = null;
       }
       if (newConnection) {
         try {
@@ -278,7 +279,7 @@ window.cypilot = function () {
       if (this.view === 'registers' && !this.registers.length) this.loadRegisters();
       if (this.view === 'control' && !this.target) this.loadTarget();
       if (this.view === 'plots' && !this.plotSources.length) this.loadSources();
-      if (this.view === 'scope' && !this.scope.info) this.loadScope();
+      if (this.view === 'scope' && !Object.keys(this.scope.infos).length) this.loadScope();
       if (this.view === 'sim') { this.loadSim(); if (!this.registers.length) this.loadRegisters(); }
       if (this.view === 'plots') this.redraw();
       if (this.view === 'runs') this.loadRuns();
@@ -368,7 +369,7 @@ window.cypilot = function () {
       if (id === this.selected) return;
       this.selected = id;
       this.registers = []; this.target = null; this.targetError = ''; this.plotSources = [];
-      this.scope.info = null; this.scope.result = null; this.sim.status = null; this.sim.error = '';
+      this.sim.status = null; this.sim.error = '';
       this.$nextTick(() => this.onView());
     },
     async command(name) {
@@ -637,59 +638,105 @@ window.cypilot = function () {
 
     async loadScope() {
       const sc = this.scope;
-      sc.info = null; sc.error = ''; sc.channels = [];
-      if (this.selected === null) return;
-      try {
-        sc.info = await api('GET', `/api/nodes/${this.selected}/scope?refresh=true`);
-        const tick = sc.info.buffer.tick_period_us;
-        if (tick > 0) sc.period = tick;
-      } catch (e) { sc.error = e.message; }
+      sc.loading = true;
+      const infos = {};
+      for (const n of this.nodes) {
+        try { infos[n.node_id] = await api('GET', `/api/nodes/${n.node_id}/scope?refresh=true`); } catch { /* no cymon */ }
+      }
+      sc.infos = infos;
+      for (const id of Object.keys(sc.picked)) if (!infos[id]) delete sc.picked[id];
+      if (!infos[sc.trigger_node]) sc.trigger_node = Number(Object.keys(infos)[0] ?? 0);
+      const tick = infos[sc.trigger_node]?.buffer.tick_period_us;
+      if (tick > 0 && !sc.periodSet) sc.period = tick;
+      sc.loading = false;
+      await this.checkTrigger();
+    },
+    scopeNodes() { return Object.keys(this.scope.infos).map(Number).sort((a, b) => a - b); },
+    picked(node) { return this.scope.picked[node] ?? []; },
+    participants() { return this.scopeNodes().filter(n => this.picked(n).length); },
+    togglePick(node, id) {
+      const ch = this.picked(node);
+      this.scope.picked[node] = ch.includes(id) ? ch.filter(x => x !== id) : [...ch, id];
+      this.checkTrigger();
     },
     maxSamples() {
-      if (!this.scope.info) return 0;
-      return Math.floor(this.scope.info.buffer.max_frames / Math.max(1, this.scope.channels.length));
+      const nodes = this.participants();
+      if (!nodes.length) return 0;
+      return Math.min(...nodes.map(n => Math.floor(this.scope.infos[n].buffer.max_frames / this.picked(n).length)));
     },
-    toggleScopeChannel(id) {
-      const ch = this.scope.channels;
-      this.scope.channels = ch.includes(id) ? ch.filter(x => x !== id) : [...ch, id];
+    async checkTrigger() {
+      const nodes = this.participants();
+      this.scope.shared = null;
+      if (nodes.length < 2) return;
+      try { this.scope.shared = await api('GET', `/api/scope/trigger?nodes=${nodes.join(',')}`); } catch (e) { this.fail(e); }
+    },
+    async setupTrigger() {
+      const nodes = this.participants();
+      if (!confirm(`Set the shared trigger subject on nodes ${nodes.join(', ')}, store and restart them?`)) return;
+      this.busy = 'setting up the shared trigger ...';
+      try {
+        await api('POST', '/api/scope/trigger', { nodes });
+        await new Promise(resolve => setTimeout(resolve, 3000));  // the nodes restart
+        await this.loadScope();
+      } catch (e) { this.fail(e); }
+      this.busy = '';
+    },
+    canCapture() {
+      const nodes = this.participants();
+      return nodes.length > 0 && nodes.includes(Number(this.scope.trigger_node)) && (nodes.length === 1 || this.scope.shared?.shared);
     },
     async capture() {
       const sc = this.scope;
       sc.busy = true;
       sc.state = 'setting up';
       try {
-        const res = await api('POST', `/api/nodes/${this.selected}/scope/capture`, {
-          channels: sc.channels, sample_period_us: Number(sc.period), num_samples: Number(sc.samples),
+        const nodes = {};
+        for (const n of this.participants()) nodes[n] = this.picked(n);
+        const res = await api('POST', '/api/scope/capture', {
+          nodes, trigger_node: Number(sc.trigger_node), sample_period_us: Number(sc.period), num_samples: Number(sc.samples),
           pretrigger_samples: Number(sc.pretrigger), trigger_mode: sc.mode, trigger_source: Number(sc.source),
           trigger_level: Number(sc.level), hysteresis_band: Number(sc.band),
         });
-        sc.result = res;
-        sc.state = `${res.t.length} samples at ${res.sample_period_us} µs`;
+        sc.result = { ...res, picked: JSON.parse(JSON.stringify(nodes)) };
+        const first = res.captures[res.trigger_node];
+        sc.state = `${first.t.length} samples at ${first.sample_period_us} µs on ${Object.keys(res.captures).length} node(s)`;
         this.$nextTick(() => this.drawScope());
       } catch (e) { this.fail(e); sc.state = 'error'; }
       sc.busy = false;
     },
-    async disarm() { await api('POST', `/api/nodes/${this.selected}/scope/disarm`).catch(e => this.fail(e)); },
+    async disarm() {
+      for (const n of this.participants()) await api('POST', `/api/nodes/${n}/scope/disarm`).catch(e => this.fail(e));
+    },
     scopeLabels() {
-      const vars = this.scope.info?.variables ?? [];
-      return this.scope.result.channels.map((_, i) => {
-        const id = this.scope.channels[i];
-        const v = vars.find(x => x.id === id);
-        return v ? `${v.name}${v.unit ? ' [' + v.unit + ']' : ''}` : `#${id}`;
-      });
+      const labels = [];
+      for (const [node, capture] of Object.entries(this.scope.result.captures)) {
+        const vars = this.scope.infos[node]?.variables ?? [];
+        capture.channels.forEach((_, i) => {
+          const id = this.scope.result.picked[node][i];
+          const v = vars.find(x => x.id === id);
+          labels.push(`${node} ${v ? v.name + (v.unit ? ' [' + v.unit + ']' : '') : '#' + id}`);
+        });
+      }
+      return labels;
+    },
+    scopeData() {
+      // Each node on its own trigger sample (t = 0); uPlot.join puts the nodes on one time axis.
+      const tables = Object.values(this.scope.result.captures).map(c => [c.t, ...c.channels]);
+      return tables.length === 1 ? tables[0] : uPlot.join(tables);
     },
     drawScope() {
       const el = document.getElementById('scope-plot');
       if (!el || !this.scope.result) return;
       if (plots.scope) plots.scope.destroy();
       plots.scope = makePlot(el, this.scopeLabels(), window.innerHeight < 700 ? 260 : 420);
-      plots.scope.setData([this.scope.result.t, ...this.scope.result.channels]);
+      plots.scope.setData(this.scopeData());
     },
     exportScope() {
-      const res = this.scope.result;
-      const header = ['t_s', ...this.scopeLabels()].join(',');
-      const rows = res.t.map((t, i) => [t, ...res.channels.map(c => c[i])].join(','));
-      download(`cypilot_scope_node${this.selected}_${stamp()}.csv`, header + '\n' + rows.join('\n') + '\n', 'text/csv');
+      const data = this.scopeData();
+      const header = ['t_s', ...this.scopeLabels().map(l => l.replace(/[ ,]/g, '_'))].join(',');
+      const rows = Array.from(data[0]).map((t, i) => [t, ...data.slice(1).map(col => col[i] ?? '')].join(','));
+      const nodes = Object.keys(this.scope.result.captures).join('-');
+      download(`cypilot_scope_nodes${nodes}_${stamp()}.csv`, header + '\n' + rows.join('\n') + '\n', 'text/csv');
     },
 
     // --- Simulation ---------------------------------------------------------------

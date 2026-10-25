@@ -6,12 +6,21 @@ reads the node's port registers and takes the ``uavcan.srv.*.id`` of each
 service whose ``.type`` is ``cymon.<Service>.0.1`` (``docs/plan.md``,
 section 8.2). A capture is set up, armed, polled until complete and read out
 page by page; the time axis is relative to the trigger sample.
+
+**Several nodes on one trigger** (:meth:`ScopeClient.multi_capture`): a node
+publishes ``cymon.TriggerEvent`` when its capture triggers, and an armed node
+that subscribes to it triggers at its next sample. With the trigger ports
+(``uavcan.pub.cymon_trigger.id``, ``uavcan.sub.cymon_trigger.id``) on one
+subject on every node, the other nodes are armed on a condition that never
+holds, then the trigger node on the user's condition. Their trigger samples are
+late by the time the event takes over the bus (about 1 to 2 ms on UNIMOC).
 """
 
 from __future__ import annotations
 
 import asyncio
 import contextlib
+import dataclasses
 from dataclasses import dataclass
 from typing import Any
 
@@ -39,6 +48,11 @@ ERRORS = {
     9: "bad config",
 }
 _COMPLETE = 4
+TRIGGER_PORTS = ("uavcan.pub.cymon_trigger.id", "uavcan.sub.cymon_trigger.id")
+DEFAULT_TRIGGER_SUBJECT = 220
+"""The subject of the shared trigger that cypilot offers to set (free on UNIMOC)."""
+_NEVER = 3.0e38
+"""A level no variable reaches: the followers fire only on the trigger event."""
 _PAGE = 255
 """Frames asked for per ReadSamples request; the node answers with as many as fit."""
 
@@ -79,6 +93,7 @@ class ScopeClient:
         self._events = events or EventHub()
         self._service_ids: dict[int, dict[str, int]] = {}
         self._clients: dict[tuple[int, str], Any] = {}
+        self._periods: dict[int, float] = {}
 
     async def discover(self, node_id: int, refresh: bool = False) -> dict[str, int]:
         """The service-IDs of the cymon services by key; empty when the node has none."""
@@ -183,10 +198,109 @@ class ScopeClient:
 
     async def capture(self, node_id: int, request: CaptureRequest) -> Capture:
         """Set up, arm, wait for completion, read out; emits ``capture`` events on the way."""
-        import cymon
-
         if request.trigger_mode not in TRIGGER_MODES:
             raise ScopeError(f"unknown trigger mode {request.trigger_mode!r}")
+        await self._setup(node_id, request)
+        await self._arm(node_id, request)
+        loop = asyncio.get_running_loop()
+        await self._wait(node_id, loop.time() + request.timeout_s, request.timeout_s)
+        return await self.read(node_id)
+
+    async def multi_capture(
+        self, channels: dict[int, list[int]], trigger_node: int, request: CaptureRequest
+    ) -> dict[int, Capture]:
+        """One capture on several nodes, triggered by ``trigger_node`` on the condition of ``request``.
+
+        ``channels``: the variable IDs per node (``request.channels`` is ignored); the
+        period, the length and the pre-trigger part are those of ``request`` on every node.
+        The nodes need the shared trigger subject (:meth:`trigger_ports`).
+        """
+        if trigger_node not in channels:
+            raise ScopeError(f"the trigger node {trigger_node} takes part in the capture")
+        if request.trigger_mode not in TRIGGER_MODES:
+            raise ScopeError(f"unknown trigger mode {request.trigger_mode!r}")
+        if len(channels) > 1:
+            state = await self.trigger_ports(list(channels))
+            if not state["shared"]:
+                raise ScopeError(f"the nodes have no shared trigger subject: {state['problem']}")
+        followers = [node for node in channels if node != trigger_node]
+        for node, node_channels in channels.items():
+            await self._setup(node, dataclasses.replace(request, channels=node_channels))
+        armed: list[int] = []
+        try:
+            for node in followers:
+                never = dataclasses.replace(
+                    request, trigger_mode="rising", trigger_source=channels[node][0], trigger_level=_NEVER
+                )
+                await self._arm(node, never)
+                armed.append(node)
+            await self._arm(trigger_node, request)
+            armed.append(trigger_node)
+            deadline = asyncio.get_running_loop().time() + request.timeout_s
+            for node in [trigger_node, *followers]:
+                await self._wait(node, deadline, request.timeout_s)
+        except BaseException:
+            for node in armed:
+                with contextlib.suppress(ScopeError):
+                    await self.disarm(node)
+            raise
+        return {node: await self.read(node) for node in [trigger_node, *followers]}
+
+    async def trigger_ports(self, node_ids: list[int]) -> dict[str, Any]:
+        """The trigger subjects of the nodes and whether they share one (published and subscribed)."""
+        nodes: dict[int, dict[str, int | None]] = {}
+        for node_id in node_ids:
+            client = self._session.registers(node_id)
+            try:
+                registers = await client.scan(list(TRIGGER_PORTS))
+            except RegisterError as error:
+                raise ScopeError(f"cannot read the trigger ports of node {node_id}: {error}") from error
+            finally:
+                client.close()
+            values: dict[str, int | None] = {"pub": None, "sub": None}
+            for register in registers:
+                content = register.value.content
+                if register.value.kind != "empty" and isinstance(content, list) and content:
+                    values["pub" if ".pub." in register.name else "sub"] = int(content[0])
+            nodes[node_id] = values
+        problem = ""
+        subjects = {v["pub"] for v in nodes.values()} | {v["sub"] for v in nodes.values()}
+        missing = [n for n, v in nodes.items() if v["pub"] is None or v["sub"] is None]
+        if missing:
+            problem = f"node {missing[0]} has no trigger ports"
+        elif len(subjects) != 1 or next(iter(subjects)) is None or int(next(iter(subjects)) or 0) > 8191:
+            problem = "the trigger ports differ or are disabled: " + ", ".join(
+                f"{n} pub {v['pub']} sub {v['sub']}" for n, v in nodes.items()
+            )
+        shared = next(iter(subjects)) if not problem else None
+        return {
+            "nodes": {str(n): v for n, v in nodes.items()},
+            "shared": not problem,
+            "subject": shared,
+            "problem": problem,
+        }
+
+    async def set_trigger_ports(self, node_ids: list[int], subject: int = DEFAULT_TRIGGER_SUBJECT) -> None:
+        """Writes the shared trigger subject into the nodes; it takes effect after a store and a restart."""
+        from cypilot.core.registers import RegisterValue
+
+        if not 0 <= subject <= 8191:
+            raise ScopeError(f"a subject-ID is 0 .. 8191, not {subject}")
+        for node_id in node_ids:
+            client = self._session.registers(node_id)
+            try:
+                for name in TRIGGER_PORTS:
+                    result = await client.write(name, RegisterValue("natural16", [subject]))
+                    if not result.accepted:
+                        raise ScopeError(f"node {node_id} refused {name} = {subject}")
+            except RegisterError as error:
+                raise ScopeError(f"cannot write the trigger ports of node {node_id}: {error}") from error
+            finally:
+                client.close()
+
+    async def _setup(self, node_id: int, request: CaptureRequest) -> None:
+        import cymon
+
         setup = await self._call(
             node_id,
             "setup",
@@ -198,6 +312,11 @@ class ScopeClient:
             ),
         )
         _check(setup.result.value, "SetupCapture")
+        self._periods[node_id] = float(setup.actual_sample_period_us)
+
+    async def _arm(self, node_id: int, request: CaptureRequest) -> None:
+        import cymon
+
         arm = await self._call(
             node_id,
             "arm",
@@ -210,20 +329,16 @@ class ScopeClient:
             ),
         )
         _check(arm.result.value, "ArmTrigger")
-        self._events.emit(
-            "capture", node_id=node_id, state="armed", period_us=float(setup.actual_sample_period_us)
-        )
+        self._events.emit("capture", node_id=node_id, state="armed", period_us=self._periods.get(node_id))
 
+    async def _wait(self, node_id: int, deadline: float, timeout_s: float) -> None:
         loop = asyncio.get_running_loop()
-        deadline = loop.time() + request.timeout_s
         state = "armed"
         while state != "complete":
             if loop.time() > deadline:
                 with contextlib.suppress(ScopeError):
                     await self.disarm(node_id)
-                raise ScopeError(
-                    f"capture on node {node_id} did not complete within {request.timeout_s} s ({state})"
-                )
+                raise ScopeError(f"capture on node {node_id} did not complete within {timeout_s} s ({state})")
             await asyncio.sleep(0.05)
             new_state = (await self.status(node_id))["state"]
             if new_state != state:
@@ -231,7 +346,6 @@ class ScopeClient:
                 self._events.emit("capture", node_id=node_id, state=state)
             if state in ("idle", "configured"):
                 raise ScopeError(f"capture on node {node_id} was disarmed")
-        return await self.read(node_id)
 
     async def read(self, node_id: int) -> Capture:
         """Reads a complete capture again."""

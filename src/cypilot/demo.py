@@ -35,7 +35,7 @@ import reg.udral.service.common
 import uavcan.diagnostic
 import uavcan.node
 import uavcan.primitive.array
-from pycyphal.application.register import Bit, Natural16, Real32, Value
+from pycyphal.application.register import Bit, Natural16, Real32, String, Value
 
 from cypilot import __version__
 
@@ -86,6 +86,8 @@ class CaptureEngine:
         self.prev = 0.0
         self.awaiting_low = False
         self.trigger_requested = False
+        self.trigger_event: tuple[int, int, float] | None = None
+        """Source, mode and value of the last trigger, until published as ``cymon.TriggerEvent``."""
 
     def setup(
         self, channels: list[int], period_us: float, num_samples: int, pretrigger: int
@@ -122,6 +124,7 @@ class CaptureEngine:
         self.prev = self.read(source) if source < len(self.variables) else 0.0
         self.awaiting_low = mode == HYSTERESIS and self.prev >= level
         self.pre, self.post, self.counter, self.trigger_requested = [], [], 0, False
+        self.trigger_event = None
         self.state = ARMED
         return 0
 
@@ -150,6 +153,7 @@ class CaptureEngine:
             filled = len(self.pre) >= self.pretrigger
             if filled and (self._fires(value) or self.trigger_requested):
                 self.state = TRIGGERED
+                self.trigger_event = (self.source, self.mode, value)
             self.prev = value
         frame = [self.read(c) for c in self.channels]
         if self.state == ARMED:
@@ -172,7 +176,9 @@ class DemoDevice:
         transport: pycyphal.transport.Transport,
         name: str = "org.tecnologic.cypilot.demo",
         tick_period_us: float = 100.0,
+        trigger_subject: int = 65535,
     ) -> None:
+        """``trigger_subject``: the ports of ``cymon.TriggerEvent`` (65535: disabled, as on UNIMOC)."""
         env = {f"UAVCAN__SRV__{k.upper()}__ID": str(v) for k, v in SERVICE_IDS.items()}
         env["UAVCAN__PUB__TELEMETRY__ID"] = str(TELEMETRY_SUBJECT)
         env["UAVCAN__SUB__READINESS__ID"] = str(READINESS_SUBJECT)
@@ -199,6 +205,11 @@ class DemoDevice:
         registers["demo.engaged"] = lambda: Value(natural16=Natural16([int(self.engaged)]))
         registers["demo.store_count"] = lambda: Value(natural16=Natural16([self.store_count]))
         registers["unimoc.settings.pending"] = lambda: Value(bit=Bit([False]))
+        for name in ("uavcan.pub.cymon_trigger", "uavcan.sub.cymon_trigger"):
+            registers[f"{name}.id"] = Value(natural16=Natural16([trigger_subject]))
+            registers[f"{name}.type"] = Value(string=String("cymon.TriggerEvent.0.1"))
+        self._trigger_pub: Any = None
+        self._trigger_sub: Any = None
 
         variables = [("sine", "A"), ("cosine", "A"), ("ramp", ""), ("engaged", "")]
         self.capture = CaptureEngine(variables, self._read_variable, tick_period_us)
@@ -232,8 +243,38 @@ class DemoDevice:
             float(self.engaged),
         ][index]
 
+    def _apply_trigger_ports(self) -> None:
+        """(Re)creates the trigger ports from their registers, as UNIMOC does at start."""
+        for port in (self._trigger_pub, self._trigger_sub):
+            if port is not None:
+                port.close()
+        self._trigger_pub = self._trigger_sub = None
+        registry = self.node.registry
+        pub = int(registry["uavcan.pub.cymon_trigger.id"])
+        sub = int(registry["uavcan.sub.cymon_trigger.id"])
+        if pub <= 8191:
+            self._trigger_pub = self.node.presentation.make_publisher(cymon_dsdl.TriggerEvent_0_1, pub)
+        if sub <= 8191:
+            self._trigger_sub = self.node.presentation.make_subscriber(cymon_dsdl.TriggerEvent_0_1, sub)
+            self._trigger_sub.receive_in_background(self._on_trigger_event)
+
+    async def _on_trigger_event(self, _: Any, transfer: Any) -> None:
+        if transfer.source_node_id != self.node.id and self.capture.state == ARMED:
+            self.capture.trigger_requested = True
+
+    async def _publish_trigger(self) -> None:
+        event, self.capture.trigger_event = self.capture.trigger_event, None
+        if event is not None and self._trigger_pub is not None:
+            source, mode, value = event
+            await self._trigger_pub.publish(
+                cymon_dsdl.TriggerEvent_0_1(
+                    source_variable_id=source, mode=cymon_dsdl.TriggerMode_0_1(mode), trigger_value=value
+                )
+            )
+
     def start(self) -> None:
         self.node.start()
+        self._apply_trigger_ports()
         loop = asyncio.get_running_loop()
         self._tasks = [loop.create_task(self._sampling()), loop.create_task(self._publishing())]
 
@@ -253,6 +294,8 @@ class DemoDevice:
             for _ in range(ticks):
                 self.t += self._tick_period_s
                 self.capture.tick()
+            if self.capture.trigger_event is not None:
+                await self._publish_trigger()
 
     async def _publishing(self) -> None:
         while True:
@@ -304,6 +347,7 @@ class DemoDevice:
         if request.command == 65535:
             self.estopped = False
             self._update_status()
+            self._apply_trigger_ports()
             return Status(status=Status.STATUS_SUCCESS)
         return Status(status=Status.STATUS_BAD_COMMAND)
 

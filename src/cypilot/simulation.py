@@ -133,6 +133,9 @@ class SimInstance:
         return [f"slcan:{path}" for name, path in sorted(self.ptys.items()) if name != "uart"]
 
     def start(self, timeout: float = 15.0) -> None:
+        """Starts the simulation (again after :meth:`stop`: new pseudo terminals, the same flash)."""
+        self.ptys.clear()
+        self._started.clear()
         command = [str(self.executable), f"-flash={self.flash}", "-no-color"]
         if self.node_id is not None:
             command.append(f"-node-id={self.node_id}")

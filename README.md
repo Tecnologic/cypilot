@@ -138,7 +138,14 @@ bottom bar):
   enabled without a click.
 - **Plots:** the published subjects of any nodes on one time axis, a window,
   pause, CSV export; commands, stops and register writes are markers.
-- **Scope:** cymon captures with trigger and pre-trigger, CSV export.
+- **Scope:** cymon captures with trigger and pre-trigger on one node or on
+  several at once: one node triggers on its condition, and the others trigger
+  on its `cymon.TriggerEvent` (about 1 to 2 ms later on the bus). For that the
+  nodes need the shared trigger subject (`uavcan.pub.cymon_trigger.id` and
+  `uavcan.sub.cymon_trigger.id`, disabled by default on UNIMOC); the view sets
+  it (subject 220), stores it and restarts the nodes. All channels in one plot,
+  each node aligned on its own trigger sample; CSV export; captures taken
+  during a run are stored in the run.
 - **Simulation:** the virtual clock of a simulated drive (pause, run, advance,
   reset) and its plant inputs (`unimoc.sim.*`).
 - **Runs:** see below.
