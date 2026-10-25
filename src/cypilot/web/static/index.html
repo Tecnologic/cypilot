@@ -1,25 +1,428 @@
-<!doctype html>
+<!DOCTYPE html>
 <!-- SPDX-License-Identifier: Apache-2.0 -->
 <html lang="en">
 <head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>cypilot</title>
-<style>
-  :root { color-scheme: light dark; font-family: system-ui, sans-serif; }
-  body { max-width: 40rem; margin: 2rem auto; padding: 0 1rem; line-height: 1.5; }
-  code { font-size: 0.95em; }
-</style>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>cypilot</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Ccircle cx='8' cy='8' r='6' fill='none' stroke='%232d6cdf' stroke-width='2'/%3E%3Cpath d='M8 2v6l4 2' fill='none' stroke='%232d6cdf' stroke-width='2'/%3E%3C/svg%3E">
+  <link rel="stylesheet" href="vendor/uPlot.min.css">
+  <link rel="stylesheet" href="app.css">
+  <script src="vendor/uPlot.iife.min.js"></script>
+  <script src="app.js"></script>
+  <script defer src="vendor/alpine.min.js"></script>
 </head>
-<body>
-<h1>cypilot</h1>
-<p>The web API runs. The user interface comes with phase W3 of the plan; until then the API is
-documented and usable at <a href="docs">/docs</a>.</p>
-<p>Status: <code id="status">…</code></p>
-<script>
-fetch("api/status").then((r) => r.json()).then((s) => {
-  document.getElementById("status").textContent = JSON.stringify(s);
-}).catch((e) => { document.getElementById("status").textContent = String(e); });
-</script>
+<body x-data="cypilot()">
+
+<!-- Login with the PIN of `cypilot-ctl serve` -->
+<div class="overlay" x-show="!auth.ok" x-cloak>
+  <form class="card login" @submit.prevent="login()">
+    <h2>cypilot</h2>
+    <label>PIN <input id="pin" type="password" inputmode="numeric" autocomplete="current-password" x-model="auth.pin" autofocus></label>
+    <button class="primary" type="submit">Log in</button>
+  </form>
+</div>
+
+<header>
+  <span class="brand">cypilot</span>
+  <span class="dot" :class="wsOpen && status?.connected ? 'ok' : 'bad'"
+        :title="!wsOpen ? 'no connection to the cypilot server' : status?.connected ? 'connected to the bus' : 'not connected to a bus'"></span>
+  <span class="bus" x-text="!status ? '' : status.connected ? status.interface : 'not connected'" :title="status?.interface"></span>
+  <span class="lease" :class="{mine: isOperator()}" x-text="operatorText()"></span>
+  <button class="small" x-show="status?.connected && !isOperator()" @click="takeControl()">Take control</button>
+  <button class="small" x-show="isOperator()" @click="releaseControl()">Release</button>
+  <span class="spacer"></span>
+  <button class="small theme" @click="toggleTheme()" :title="theme === 'dark' ? 'Light theme' : 'Dark theme'" x-text="theme === 'dark' ? '☀' : '☾'"></button>
+  <button id="stop-all" class="stop" @click="stopAll()" title="SLEEP to every drive and stop all publications (Esc)">STOP ALL</button>
+  <button id="estop" class="estop" @click="estop()" title="EMERGENCY_STOP to every UNIMOC node; needs a restart (Shift+Esc)">E-STOP</button>
+</header>
+
+<nav class="views">
+  <template x-for="v in views" :key="v.id">
+    <button :class="{active: view === v.id}" @click="show(v.id)" x-text="v.label" :data-view="v.id"></button>
+  </template>
+</nav>
+
+<div class="toast" :class="{bad: toastBad}" x-show="toast" x-text="toast" @click="toast = ''" x-transition></div>
+<p class="banner" x-show="status && !status.connected && view !== 'bus'">Not connected to a bus. <button class="small" @click="show('bus')">Connect</button></p>
+<p class="banner" x-show="busy" x-text="busy"></p>
+
+<!-- Node choice for the views about one node -->
+<div class="nodebar" x-show="status?.connected && ['registers', 'control', 'plots', 'scope', 'sim'].includes(view)">
+  <label>Node
+    <select id="node-select" @change="selectNode($event.target.value)">
+      <template x-for="n in nodes" :key="n.node_id">
+        <option :value="n.node_id" :selected="n.node_id === selected" x-text="nodeLabel(n)"></option>
+      </template>
+    </select>
+  </label>
+  <template x-if="node()">
+    <span class="chips">
+      <template x-for="c in node().chips" :key="c"><span class="chip" :class="chipClass(c)" x-text="c"></span></template>
+    </span>
+  </template>
+</div>
+
+<!-- ───────────── Bus ───────────── -->
+<main x-show="view === 'bus'" class="split">
+  <section class="card">
+    <h2>Connect</h2>
+    <div class="form">
+      <label class="wide-field">Source
+        <select x-model="busForm.source">
+          <option value="adapter">CAN adapter or simulation</option>
+          <option value="demo">Demo devices (no hardware)</option>
+        </select></label>
+      <template x-if="busForm.source === 'adapter'">
+        <div class="wide-field">
+          <span class="hint">Interfaces (several form a redundant bus)</span>
+          <template x-for="(iface, i) in busForm.interfaces" :key="i">
+            <div class="row tight">
+              <input class="wide mono iface" x-model="busForm.interfaces[i]" list="iface-examples" placeholder="socketcan:can0">
+              <button class="small" @click="busForm.interfaces.splice(i, 1)" x-show="busForm.interfaces.length > 1">remove</button>
+            </div>
+          </template>
+          <datalist id="iface-examples">
+            <option value="socketcan:can0"></option><option value="socketcan:vcan0"></option>
+            <option value="canable:/dev/ttyACM0"></option><option value="canable:COM5"></option>
+            <option value="slcan:/dev/pts/3"></option><option value="pcan:PCAN_USBBUS1"></option>
+          </datalist>
+          <div class="row tight">
+            <button class="small" @click="busForm.interfaces.push('')">add interface</button>
+            <button class="small" @click="searchAdapters()">search adapters</button>
+          </div>
+          <template x-for="a in adapters" :key="a.interface">
+            <div class="row tight">
+              <button class="small" @click="useAdapter(a)">use</button>
+              <span class="mono" x-text="a.interface"></span><span class="hint" x-text="a.description"></span>
+            </div>
+          </template>
+          <p class="hint" x-show="adaptersSearched && !adapters.length">No adapter found; enter the interface by hand.</p>
+        </div>
+      </template>
+      <label x-show="busForm.source === 'demo'">Devices <input id="demo-devices" type="number" min="1" max="16" x-model.number="busForm.demo_devices"></label>
+      <template x-if="busForm.source === 'adapter'">
+        <div class="form wide-field">
+          <label>MTU
+            <select x-model="busForm.mtu">
+              <option value="">default</option><option value="8">8 (classic CAN)</option><option value="64">64 (CAN FD)</option>
+            </select></label>
+          <label>Bit rate [bit/s] <input type="number" x-model="busForm.bitrate" placeholder="adapter default"></label>
+          <label>Data bit rate [bit/s] <input type="number" x-model="busForm.data_bitrate" placeholder="no switch"></label>
+          <label>PnP allocator database <input x-model="busForm.pnp" placeholder="none"></label>
+        </div>
+      </template>
+      <label>Node-ID of cypilot <input type="number" min="0" max="127" x-model.number="busForm.local_node_id"></label>
+    </div>
+    <div class="row">
+      <button id="connect" class="primary" @click="connectBus()">Connect</button>
+      <button @click="disconnectBus()" :disabled="!status?.connected">Disconnect</button>
+    </div>
+  </section>
+  <section class="card">
+    <h2>Server</h2>
+    <dl class="info">
+      <dt>cypilot</dt><dd x-text="status?.version"></dd>
+      <dt>Bus</dt><dd x-text="status?.connected ? status.interface : 'not connected'"></dd>
+      <dt>Node-ID</dt><dd x-text="status?.local_node_id ?? ''"></dd>
+      <dt>Control lease</dt><dd x-text="status ? `${status.lease_time} s` : ''"></dd>
+      <dt>This client</dt><dd class="mono" x-text="clientId"></dd>
+    </dl>
+    <p class="hint">cypilot is no safety device. Drives stop when the operator's connection is lost for longer than the lease, but the
+      safety function of the machine must not depend on it.</p>
+  </section>
+</main>
+
+<!-- ───────────── Nodes ───────────── -->
+<main x-show="view === 'nodes'">
+  <p class="empty" x-show="status?.connected && !nodes.length">No node seen yet.</p>
+  <div class="cards">
+    <template x-for="n in nodes" :key="n.node_id">
+      <article class="card node" :class="{sel: n.node_id === selected}" @click="selectNode(n.node_id)" :data-node="n.node_id">
+        <div class="card-head">
+          <strong x-text="n.node_id"></strong>
+          <span class="name" x-text="n.name || '(no name)'"></span>
+          <span class="badge" :class="n.health" x-text="n.health"></span>
+        </div>
+        <div class="chips">
+          <template x-for="c in n.chips" :key="c"><span class="chip" :class="chipClass(c)" x-text="c"></span></template>
+        </div>
+        <dl class="info small">
+          <dt>Mode</dt><dd x-text="n.mode"></dd>
+          <dt>Uptime</dt><dd x-text="fmtUptime(n.uptime)"></dd>
+          <dt>Software</dt><dd x-text="(n.software_version ?? '') + (n.vcs_revision ? ' · ' + n.vcs_revision.slice(-8) : '')"></dd>
+        </dl>
+        <div class="row tight">
+          <button class="small" @click.stop="selectNode(n.node_id); show('registers')">Registers</button>
+          <button class="small" x-show="n.unimoc" @click.stop="selectNode(n.node_id); show('control')">Control</button>
+          <button class="small" @click.stop="selectNode(n.node_id); show('plots')">Plot</button>
+        </div>
+      </article>
+    </template>
+  </div>
+</main>
+
+<!-- ───────────── Registers ───────────── -->
+<main x-show="view === 'registers'">
+  <div class="row">
+    <button @click="loadRegisters()" x-text="loadingRegisters ? 'reading ...' : 'Read all'" :disabled="loadingRegisters"></button>
+    <input class="filter" x-model="registerFilter" placeholder="filter by name or help">
+    <button class="small" @click="exportRegisters()" :disabled="!registers.length">Export JSON</button>
+    <button class="small" @click="command('store')" :disabled="!isOperator()" title="Store the settings in flash">Store</button>
+    <button class="small" @click="command('restart')" :disabled="!isOperator()">Restart</button>
+    <span class="hint" x-show="!descriptions.available && registers.length">no register description file</span>
+    <span class="hint" x-show="!isOperator()">Take control to write.</span>
+  </div>
+  <template x-for="g in registerGroups()" :key="g.name">
+    <details class="card group" :open="isOpen(g.name)" @toggle="open[g.name] = $event.target.open">
+      <summary><span x-text="g.name"></span> <span class="hint" x-text="`(${g.regs.length})`"></span></summary>
+      <table class="registers">
+        <tbody>
+          <template x-for="r in g.regs" :key="r.name">
+            <tr :data-register="r.name">
+              <td class="name">
+                <span class="mono" x-text="r.name"></span>
+                <div class="help" x-text="describe(r.name)?.help ?? ''"></div>
+              </td>
+              <td class="value">
+                <input :class="{dirty: dirty(r)}" x-model="r.edit" :readonly="!r.mutable" @keydown.enter="writeRegister(r)">
+              </td>
+              <td class="unit">
+                <span x-text="describe(r.name)?.unit ?? ''"></span>
+                <span class="hint" x-text="limits(describe(r.name))"></span>
+              </td>
+              <td class="flags">
+                <span class="tag" x-show="!r.mutable">read-only</span>
+                <span class="tag" x-show="r.persistent">stored</span>
+                <span class="tag" x-show="describe(r.name)?.applies && describe(r.name).applies !== 'immediate'" x-text="'on ' + describe(r.name)?.applies"></span>
+              </td>
+              <td class="actions">
+                <button class="small" x-show="r.mutable" @click="writeRegister(r)" :disabled="!isOperator() || !dirty(r)">Write</button>
+                <button class="small" @click="readRegister(r)">Read</button>
+              </td>
+            </tr>
+          </template>
+        </tbody>
+      </table>
+    </details>
+  </template>
+</main>
+
+<!-- ───────────── Control ───────────── -->
+<main x-show="view === 'control'" class="split">
+  <section class="card">
+    <h2>Drive</h2>
+    <p class="hint" x-show="node() && !node().unimoc">Not a UNIMOC drive: no control.</p>
+    <p class="hint" x-show="targetError" x-text="targetError"></p>
+    <p x-show="target" class="hint" x-text="target ? `readiness subject ${target.readiness}` : ''"></p>
+    <p class="hint" x-show="!isOperator()">Take control to enable a drive. STOP ALL and E-STOP work for everybody.</p>
+    <div class="row">
+      <button id="enable" class="primary" @click="enable()" :disabled="!isOperator() || !target || engaged()">Enable</button>
+      <button id="disable" @click="disable()" :disabled="!isOperator() || !engaged()">Disable</button>
+      <button @click="recover()" :disabled="!isOperator()">Recover</button>
+      <label class="inline"><input type="checkbox" x-model="allowRestart"> allow a restart (E-stop)</label>
+    </div>
+    <p class="hint">cypilot is no safety device. A drive goes to sleep when this page loses its connection for
+      <span x-text="status?.lease_time"></span> s.</p>
+  </section>
+  <section class="card">
+    <h2>Setpoint</h2>
+    <p class="hint" x-show="target && !Object.keys(target.setpoints).length">The drive subscribes to no setpoint.</p>
+    <template x-if="target && Object.keys(target.setpoints).length">
+      <div>
+        <div class="form">
+          <label>Mode
+            <select id="setpoint-mode" x-model="setpoint.mode">
+              <template x-for="(sp, mode) in target.setpoints" :key="mode">
+                <option :value="mode" x-text="`${mode} (subject ${sp.subject})`" :selected="mode === setpoint.mode"></option>
+              </template>
+            </select></label>
+          <label>Ramp [s] <input type="number" min="0" step="0.1" x-model="setpoint.ramp"></label>
+          <template x-for="(label, i) in componentLabels()" :key="label">
+            <label><span x-text="label"></span><input type="number" step="any" class="setpoint-value" x-model="setpoint.values[i]"></label>
+          </template>
+        </div>
+        <div class="row">
+          <button id="send-setpoint" class="primary" @click="sendSetpoint()" :disabled="!isOperator() || !engaged()">Send</button>
+          <button @click="sendSetpoint(true)" :disabled="!isOperator() || !engaged()">Zero</button>
+        </div>
+      </div>
+    </template>
+  </section>
+</main>
+
+<!-- ───────────── Plots ───────────── -->
+<main x-show="view === 'plots'">
+  <div class="row">
+    <select id="plot-source" x-model="plotSourceKey">
+      <template x-for="s in plotSources" :key="s.key">
+        <option :value="s.key" x-text="`${s.port} (subject ${s.subject}, ${s.type_name})`" :selected="s.key === plotSourceKey"></option>
+      </template>
+    </select>
+    <button id="add-source" @click="addSource()" :disabled="!plotSourceKey">Add</button>
+    <label class="inline">Window [s] <input class="narrow" type="number" min="1" x-model.number="windowSeconds" @change="redraw()"></label>
+    <button @click="plotPaused = !plotPaused; redraw()" x-text="plotPaused ? 'Run' : 'Pause'"></button>
+    <button @click="exportPlot()" :disabled="!channels.length">Export CSV</button>
+    <span class="hint" x-show="!plotSources.length">The node publishes no subject with a type register.</span>
+  </div>
+  <div class="card"><div id="plot-main" class="plot"></div>
+    <p class="hint" x-show="!channels.length">Add a subject and choose its fields.</p></div>
+  <template x-for="s in subscriptions" :key="s.id">
+    <div class="card">
+      <div class="card-head">
+        <strong x-text="s.label"></strong>
+        <span class="hint" x-text="`subject ${s.subject_id} · ${s.type} · ${s.count} messages`"></span>
+        <span class="spacer"></span>
+        <button class="small" @click="dropSubscription(s)">Remove</button>
+      </div>
+      <div class="fields">
+        <template x-for="f in s.fields" :key="f">
+          <label class="inline"><input type="checkbox" :checked="hasChannel(s, f)" @change="toggleChannel(s, f)"> <span class="mono" x-text="f"></span></label>
+        </template>
+      </div>
+    </div>
+  </template>
+</main>
+
+<!-- ───────────── Scope ───────────── -->
+<main x-show="view === 'scope'" class="split">
+  <section class="card">
+    <h2>Capture</h2>
+    <p class="hint" x-show="scope.error" x-text="scope.error"></p>
+    <template x-if="scope.info">
+      <div>
+        <div class="vars">
+          <template x-for="v in scope.info.variables" :key="v.id">
+            <label class="inline"><input type="checkbox" :checked="scope.channels.includes(v.id)" @change="toggleScopeChannel(v.id)">
+              <span x-text="v.name"></span> <span class="unit" x-text="v.unit"></span></label>
+          </template>
+        </div>
+        <div class="form">
+          <label>Period [µs] <input type="number" x-model="scope.period"></label>
+          <label>Samples (max <span x-text="maxSamples()"></span>) <input type="number" x-model="scope.samples"></label>
+          <label>Pre-trigger <input type="number" x-model="scope.pretrigger"></label>
+          <label>Trigger
+            <select x-model="scope.mode">
+              <option>immediate</option><option>rising</option><option>falling</option><option>hysteresis</option>
+            </select></label>
+          <label>Source
+            <select x-model.number="scope.source">
+              <template x-for="v in scope.info.variables" :key="v.id"><option :value="v.id" x-text="v.name"></option></template>
+            </select></label>
+          <label>Level <input type="number" step="any" x-model="scope.level"></label>
+          <label>Hysteresis <input type="number" step="any" x-model="scope.band"></label>
+        </div>
+        <div class="row">
+          <button id="capture" class="primary" @click="capture()" :disabled="scope.busy || !scope.channels.length">Capture</button>
+          <button @click="disarm()">Disarm</button>
+          <button @click="exportScope()" :disabled="!scope.result">Export CSV</button>
+          <span class="hint" x-text="scope.state"></span>
+        </div>
+      </div>
+    </template>
+  </section>
+  <section class="card"><div id="scope-plot" class="plot tall"></div></section>
+</main>
+
+<!-- ───────────── Simulation ───────────── -->
+<main x-show="view === 'sim'" class="split">
+  <section class="card">
+    <h2>Clock</h2>
+    <p class="hint" x-show="sim.error" x-text="'Not a simulation: ' + sim.error"></p>
+    <template x-if="sim.status">
+      <div>
+        <p id="sim-clock" x-text="(sim.status.paused ? 'paused' : 'running') + ` at ${fmtNum(sim.status.virtual_time)} s (${sim.status.cycle_count} cycles)`"></p>
+        <div class="row">
+          <button id="sim-run" @click="simAction(sim.status.paused ? 'run' : 'pause')" :disabled="!isOperator()" x-text="sim.status.paused ? 'Run' : 'Pause'"></button>
+          <input class="narrow" type="number" min="1" x-model="sim.cycles">
+          <button id="sim-advance" @click="simAction('advance')" :disabled="!isOperator() || !sim.status.paused">Advance</button>
+          <button @click="simAction('reset')" :disabled="!isOperator()">Reset plant</button>
+        </div>
+      </div>
+    </template>
+  </section>
+  <section class="card">
+    <h2>Plant inputs</h2>
+    <table class="registers">
+      <tbody>
+        <template x-for="r in plantInputs()" :key="r.name">
+          <tr>
+            <td class="name"><span class="mono" x-text="r.name.slice('unimoc.sim.'.length)"></span>
+              <div class="help" x-text="describe(r.name)?.help ?? ''"></div></td>
+            <td class="value"><input :class="{dirty: dirty(r)}" x-model="r.edit" @keydown.enter="writeRegister(r)"></td>
+            <td class="unit" x-text="describe(r.name)?.unit ?? ''"></td>
+            <td><button class="small" @click="writeRegister(r)" :disabled="!isOperator() || !dirty(r)">Write</button></td>
+          </tr>
+        </template>
+      </tbody>
+    </table>
+  </section>
+</main>
+
+<!-- ───────────── Monitor and publish (expert) ───────────── -->
+<main x-show="view === 'expert'" class="split">
+  <section class="card">
+    <h2>Monitor a subject</h2>
+    <div class="form">
+      <label>Subject-ID <input type="number" min="0" max="8191" x-model="monitorForm.subject_id"></label>
+      <label>Type <input class="mono" x-model="monitorForm.type" placeholder="uavcan.primitive.array.Real32"></label>
+    </div>
+    <div class="row"><button @click="monitor()" :disabled="monitorForm.subject_id === null || !monitorForm.type">Monitor</button></div>
+    <template x-for="s in subscriptions" :key="s.id">
+      <div class="card">
+        <div class="card-head">
+          <strong x-text="`${s.subject_id} ${s.type}`"></strong>
+          <span class="hint" x-text="`${s.count} messages from ${s.sources.join(', ') || '-'}`"></span>
+          <span class="spacer"></span><button class="small" @click="dropSubscription(s)">Remove</button>
+        </div>
+        <pre class="mono json" x-text="JSON.stringify(s.last, null, 1)"></pre>
+      </div>
+    </template>
+  </section>
+  <section class="card">
+    <h2>Publish</h2>
+    <p class="hint">Publications need control and end with their lease, when this page closes and on STOP ALL.</p>
+    <div class="form">
+      <label>Subject-ID <input type="number" min="0" max="8191" x-model="pubForm.subject_id"></label>
+      <label>Type <input class="mono" x-model="pubForm.type" @change="loadTemplate()"></label>
+      <label>Rate [Hz] <input type="number" x-model="pubForm.rate_hz"></label>
+      <label>Lease [s] <input type="number" x-model="pubForm.lease_s"></label>
+      <label class="wide-field">Value (JSON) <textarea class="json" rows="6" x-model="pubForm.value"></textarea></label>
+    </div>
+    <div class="row"><button class="primary" @click="startPublish()" :disabled="!isOperator()">Start</button></div>
+    <template x-for="p in publications" :key="p.id">
+      <div class="row">
+        <span class="mono" x-text="`${p.subject_id} ${p.type} ${p.rate_hz} Hz`"></span>
+        <input class="wide mono" x-model="p.edit">
+        <button class="small" @click="updatePublish(p)" :disabled="!isOperator()">Update</button>
+        <button class="small" @click="stopPublish(p)">Stop</button>
+      </div>
+    </template>
+  </section>
+</main>
+
+<!-- ───────────── Log ───────────── -->
+<main x-show="view === 'log'">
+  <div class="row">
+    <select x-model="logLevel">
+      <template x-for="s in ['debug', 'info', 'notice', 'warning', 'error']" :key="s"><option x-text="s" :selected="s === logLevel"></option></template>
+    </select>
+    <select x-model="logNode">
+      <option value="">all nodes</option>
+      <template x-for="n in nodes" :key="n.node_id"><option :value="n.node_id" x-text="nodeLabel(n)"></option></template>
+    </select>
+  </div>
+  <table class="log card">
+    <tbody>
+      <template x-for="(d, i) in filteredLog()" :key="i">
+        <tr :class="d.severity">
+          <td class="mono" x-text="fmtTime(d.t)"></td><td x-text="d.node_id ?? ''"></td><td x-text="d.severity"></td><td x-text="d.text"></td>
+        </tr>
+      </template>
+    </tbody>
+  </table>
+  <p class="empty" x-show="!filteredLog().length">No messages.</p>
+</main>
+
 </body>
 </html>

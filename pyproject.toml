@@ -38,6 +38,7 @@ dev = [
     "cypilot[gui]",
     "httpx>=0.27",
     "mypy~=2.4",
+    "playwright>=1.44",
     "pytest~=9.1",
     "ruff==0.17.2",
 ]
@@ -88,4 +89,5 @@ ignore_missing_imports = true
 testpaths = ["tests"]
 markers = [
     "sim: needs the UNIMOC native_sim binary (Linux), see tests/sim/conftest.py",
+    "browser: needs Chromium for Playwright, see the browser fixture in tests/conftest.py",
 ]
