@@ -17,7 +17,8 @@ in Python on pycyphal. The plan, the decisions and the phases are in
   replay (`signals.py`), and from the cymon tool: the CANable FD bus
   (`canable.py`), the event hub (`events.py`), monitoring any subject and
   publications with a lease (`subjects.py`), cymon captures (`scope.py`),
-  the bus hub of the web server with the control lease (`hub.py`).
+  the bus hub of the web server with the control lease (`hub.py`), the
+  UNIMOC register description file (`descriptions.py`).
   **No Qt import in `core/`.**
 - `src/cypilot/demo.py`: simulated device (registers, telemetry, readiness,
   cymon services) for tests on a python-can virtual bus without the UNIMOC
