@@ -8,15 +8,14 @@ frames between a terminal of each, so both drives and cypilot are on one bus.
 from __future__ import annotations
 
 import asyncio
-import contextlib
 import threading
 from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
 
-import can
 import httpx
 import pytest
+import serial
 
 from cypilot.core.hub import BusHub
 from cypilot.core.session import Session
@@ -31,25 +30,36 @@ OPERATOR = {"X-Cypilot-Client": "operator"}
 
 
 class Bridge:
-    """Relays classic CAN frames between two slcan terminals in both directions."""
+    """Relays the frames between two slcan terminals of two drives, as text.
+
+    A drive writes a received frame to a terminal as ``T<id><len><data>\\r``,
+    which is also the command to send that frame: the lines pass through as
+    they are, in chunks (decoding every frame in Python was too slow for the
+    traffic of two drives). Only frame lines pass, so the acknowledgements of
+    one drive do not reach the other.
+    """
 
     def __init__(self, a: str, b: str) -> None:
-        self.buses = [can.Bus(interface="slcan", channel=path, bitrate=1_000_000) for path in (a, b)]
+        self.ports = [serial.Serial(path, timeout=0.01) for path in (a, b)]
         self.relayed = [0, 0]
         """Frames relayed from a to b and from b to a."""
         self._stop = threading.Event()
         self._threads = [threading.Thread(target=self._relay, args=(i,), daemon=True) for i in (0, 1)]
 
     def _relay(self, index: int) -> None:
-        source, target = self.buses[index], self.buses[1 - index]
+        source, target = self.ports[index], self.ports[1 - index]
+        pending = b""
         while not self._stop.is_set():
-            message = source.recv(0.05)
-            if message is not None:
-                with contextlib.suppress(can.CanError):
-                    target.send(message)
-                    self.relayed[index] += 1
+            pending += source.read(4096)
+            *lines, pending = pending.split(b"\r")
+            frames = [line for line in lines if line[:1] in (b"T", b"D", b"B")]
+            if frames:
+                target.write(b"\r".join(frames) + b"\r")
+                self.relayed[index] += len(frames)
 
     def __enter__(self) -> Bridge:
+        for port in self.ports:
+            port.write(b"O\r")  # open the terminal: the drive writes the bus to it from now on
         for thread in self._threads:
             thread.start()
         return self
@@ -59,8 +69,8 @@ class Bridge:
         for thread in self._threads:
             if thread.ident is not None:  # started
                 thread.join(2)
-        for bus in self.buses:
-            bus.shutdown()
+        for port in self.ports:
+            port.close()
 
 
 async def set_trigger_ports(interface: str, node_id: int) -> None:
@@ -122,7 +132,9 @@ def test_two_drives_on_one_trigger(drives: tuple[SimInstance, SimInstance]) -> N
                     events.append((transfer.source_node_id, float(transfer.timestamp.monotonic)))
 
                 subscriber.receive_in_background(on_event)
-                trigger = (await client.get("/api/scope/trigger?nodes=10,11")).json()
+                response = await client.get("/api/scope/trigger?nodes=10,11")
+                assert response.status_code == 200, response.text
+                trigger = response.json()
                 assert trigger["shared"] is True and trigger["subject"] == TRIGGER, trigger
 
                 body = {
