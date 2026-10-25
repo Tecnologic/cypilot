@@ -51,6 +51,8 @@ _COMPLETE = 4
 TRIGGER_PORTS = ("uavcan.pub.cymon_trigger.id", "uavcan.sub.cymon_trigger.id")
 DEFAULT_TRIGGER_SUBJECT = 220
 """The subject of the shared trigger that cypilot offers to set (free on UNIMOC)."""
+FOLLOW_MARGIN = 2.0
+"""Seconds the other nodes get, on top of the capture's length, once the trigger node has its capture."""
 _NEVER = 3.0e38
 """A level no variable reaches: the followers fire only on the trigger event."""
 _PAGE = 255
@@ -236,9 +238,14 @@ class ScopeClient:
                 armed.append(node)
             await self._arm(trigger_node, request)
             armed.append(trigger_node)
-            deadline = asyncio.get_running_loop().time() + request.timeout_s
-            for node in [trigger_node, *followers]:
-                await self._wait(node, deadline, request.timeout_s)
+            loop = asyncio.get_running_loop()
+            await self._wait(trigger_node, loop.time() + request.timeout_s, request.timeout_s)
+            # The others trigger within a few ms of the trigger node; they then need the samples
+            # after the trigger. One that is still armed missed the trigger event.
+            span = request.num_samples * self._periods.get(trigger_node, request.sample_period_us) * 1e-6
+            follow = FOLLOW_MARGIN + 2 * span
+            for node in followers:
+                await self._wait(node, loop.time() + follow, follow, missed=trigger_node)
         except BaseException:
             for node in armed:
                 with contextlib.suppress(ScopeError):
@@ -331,14 +338,22 @@ class ScopeClient:
         _check(arm.result.value, "ArmTrigger")
         self._events.emit("capture", node_id=node_id, state="armed", period_us=self._periods.get(node_id))
 
-    async def _wait(self, node_id: int, deadline: float, timeout_s: float) -> None:
+    async def _wait(self, node_id: int, deadline: float, timeout_s: float, missed: int | None = None) -> None:
+        """Polls until the capture is complete; ``missed``: the trigger node a follower waits for."""
         loop = asyncio.get_running_loop()
         state = "armed"
         while state != "complete":
             if loop.time() > deadline:
                 with contextlib.suppress(ScopeError):
                     await self.disarm(node_id)
-                raise ScopeError(f"capture on node {node_id} did not complete within {timeout_s} s ({state})")
+                if missed is not None and state == "armed":
+                    raise ScopeError(
+                        f"node {node_id} did not trigger on the trigger event of node {missed} "
+                        f"within {timeout_s:.1f} s: check the shared trigger subject"
+                    )
+                raise ScopeError(
+                    f"capture on node {node_id} did not complete within {timeout_s:.1f} s ({state})"
+                )
             await asyncio.sleep(0.05)
             new_state = (await self.status(node_id))["state"]
             if new_state != state:

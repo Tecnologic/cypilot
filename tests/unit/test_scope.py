@@ -126,7 +126,7 @@ def test_a_node_without_cymon(dsdl: Path) -> None:
 
 def test_two_nodes_on_one_trigger(dsdl: Path) -> None:
     async def body() -> None:
-        async with demo_bus(devices=2) as (session, _):
+        async with demo_bus(devices=2) as (session, devices):
             scope = ScopeClient(session)
             follower = DEVICE_ID + 1
             ports = await scope.trigger_ports([DEVICE_ID, follower])
@@ -158,5 +158,14 @@ def test_two_nodes_on_one_trigger(dsdl: Path) -> None:
 
             with pytest.raises(ScopeError, match="takes part"):
                 await scope.multi_capture({follower: [1]}, DEVICE_ID, request)
+
+            # A follower that misses the trigger event fails soon and says so, not after timeout_s.
+            devices[1]._trigger_sub.close()
+            devices[1]._trigger_sub = None
+            loop = asyncio.get_running_loop()
+            start = loop.time()
+            with pytest.raises(ScopeError, match="did not trigger on the trigger event of node 10"):
+                await scope.multi_capture({DEVICE_ID: [0], follower: [1]}, DEVICE_ID, request)
+            assert loop.time() - start < 4.0 < request.timeout_s * 2
 
     run(body())
