@@ -58,7 +58,7 @@
 <p class="banner" x-show="busy" x-text="busy"></p>
 
 <!-- Node choice for the views about one node -->
-<div class="nodebar" x-show="status?.connected && ['registers', 'control', 'plots', 'scope', 'sim'].includes(view)">
+<div class="nodebar" x-show="status?.connected && ['registers', 'control', 'plots', 'sim'].includes(view)">
   <label>Node
     <select id="node-select" @change="selectNode($event.target.value)">
       <template x-for="n in nodes" :key="n.node_id">
@@ -300,35 +300,56 @@
 <main x-show="view === 'scope'" class="split">
   <section class="card">
     <h2>Capture</h2>
-    <p class="hint" x-show="scope.error" x-text="scope.error"></p>
-    <template x-if="scope.info">
-      <div>
+    <div class="row">
+      <button class="small" @click="loadScope()" x-text="scope.loading ? 'reading ...' : 'Refresh nodes'"></button>
+      <span class="hint" x-show="!scope.loading && !scopeNodes().length">No node with cymon services.</span>
+    </div>
+    <template x-for="n in scopeNodes()" :key="n">
+      <details class="group" :data-scope-node="n" open>
+        <summary><span x-text="nodeLabel(nodes.find(x => x.node_id === n) ?? {node_id: n, name: ''})"></span>
+          <span class="hint" x-text="picked(n).length ? `(${picked(n).length})` : ''"></span></summary>
         <div class="vars">
-          <template x-for="v in scope.info.variables" :key="v.id">
-            <label class="inline"><input type="checkbox" :checked="scope.channels.includes(v.id)" @change="toggleScopeChannel(v.id)">
+          <template x-for="v in scope.infos[n].variables" :key="v.id">
+            <label class="inline"><input type="checkbox" :data-var="v.name" :checked="picked(n).includes(v.id)" @change="togglePick(n, v.id)">
               <span x-text="v.name"></span> <span class="unit" x-text="v.unit"></span></label>
           </template>
         </div>
+      </details>
+    </template>
+    <template x-if="scopeNodes().length">
+      <div>
         <div class="form">
-          <label>Period [µs] <input type="number" x-model="scope.period"></label>
-          <label>Samples (max <span x-text="maxSamples()"></span>) <input type="number" x-model="scope.samples"></label>
-          <label>Pre-trigger <input type="number" x-model="scope.pretrigger"></label>
+          <label>Trigger node
+            <select id="trigger-node" x-model.number="scope.trigger_node">
+              <template x-for="n in scopeNodes()" :key="n"><option :value="n" x-text="n" :selected="n === scope.trigger_node"></option></template>
+            </select></label>
           <label>Trigger
             <select x-model="scope.mode">
               <option>immediate</option><option>rising</option><option>falling</option><option>hysteresis</option>
             </select></label>
           <label>Source
             <select x-model.number="scope.source">
-              <template x-for="v in scope.info.variables" :key="v.id"><option :value="v.id" x-text="v.name"></option></template>
+              <template x-for="v in scope.infos[scope.trigger_node]?.variables ?? []" :key="v.id"><option :value="v.id" x-text="v.name"></option></template>
             </select></label>
           <label>Level <input type="number" step="any" x-model="scope.level"></label>
           <label>Hysteresis <input type="number" step="any" x-model="scope.band"></label>
+          <label>Period [µs] <input type="number" x-model="scope.period" @change="scope.periodSet = true"></label>
+          <label>Samples (max <span x-text="maxSamples()"></span>) <input type="number" x-model="scope.samples"></label>
+          <label>Pre-trigger <input type="number" x-model="scope.pretrigger"></label>
         </div>
+        <p class="hint" x-show="participants().length > 1 && scope.shared && !scope.shared.shared" id="trigger-problem">
+          <span x-text="scope.shared?.problem"></span>.
+          <button class="small" @click="setupTrigger()" :disabled="!isOperator()">Set up the shared trigger</button>
+          (stores and restarts the nodes)</p>
+        <p class="hint" x-show="participants().length > 1 && scope.shared?.shared"
+           x-text="`Shared trigger on subject ${scope.shared?.subject}: the other nodes trigger 1 to 2 ms later.`"></p>
+        <p class="hint" x-show="participants().length && !participants().includes(Number(scope.trigger_node))">
+          Pick a variable of the trigger node too.</p>
         <div class="row">
-          <button id="capture" class="primary" @click="capture()" :disabled="scope.busy || !scope.channels.length">Capture</button>
+          <button id="capture" class="primary" @click="capture()" :disabled="scope.busy || !canCapture()">Capture</button>
           <button @click="disarm()">Disarm</button>
           <button @click="exportScope()" :disabled="!scope.result">Export CSV</button>
-          <span class="hint" x-text="scope.state"></span>
+          <span class="hint" id="scope-state" x-text="scope.state"></span>
         </div>
       </div>
     </template>

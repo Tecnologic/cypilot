@@ -306,3 +306,51 @@ def test_the_drive_target(dsdl: Path) -> None:
             assert target == {"node_id": DEVICE_ID, "readiness": 106, "setpoints": {}}
 
     run(body())
+
+
+def test_a_capture_of_two_nodes_is_stored_in_the_run(dsdl: Path, tmp_path: Path) -> None:
+    from cypilot.core.runs import RunStore
+
+    async def body() -> None:
+        hub = BusHub(lease_time=1.0, runs=RunStore(tmp_path))
+        transport = httpx.ASGITransport(app=create_app(hub))
+        try:
+            async with httpx.AsyncClient(transport=transport, base_url="http://cypilot") as client:
+                await client.post("/api/connect", json={"demo_devices": 2})
+                await hub.require_session().wait_for_node(DEVICE_ID + 1)
+                state = (await client.get("/api/scope/trigger?nodes=10,11")).json()
+                assert state["shared"] is False
+                setup = {"nodes": [10, 11]}
+                assert (
+                    await client.post("/api/scope/trigger", json=setup, headers=VIEWER)
+                ).status_code == 403
+                await client.post("/api/control/take", headers=OPERATOR)
+                hub.renew("operator")
+                assert (
+                    await client.post("/api/scope/trigger", json=setup, headers=OPERATOR)
+                ).status_code == 200
+                assert (await client.get("/api/scope/trigger?nodes=10,11")).json()["subject"] == 220
+
+                await client.post("/api/runs/start")
+                capture = {
+                    "nodes": {"10": [0], "11": [1, 2]},
+                    "trigger_node": 10,
+                    "sample_period_us": 100,
+                    "num_samples": 40,
+                    "trigger_mode": "rising",
+                    "trigger_level": 0.5,
+                }
+                result = (await client.post("/api/scope/capture", json=capture)).json()
+                assert set(result["captures"]) == {"10", "11"}
+                assert len(result["captures"]["11"]["channels"]) == 2
+                run_id = (await client.post("/api/runs/stop")).json()["id"]
+                files = {f["name"] for f in (await client.get(f"/api/runs/{run_id}")).json()["files"]}
+                assert {"capture1_node10.csv", "capture2_node11.csv"} <= files
+                header = (
+                    await client.get(f"/api/runs/{run_id}/files/capture2_node11.csv")
+                ).text.splitlines()[0]
+                assert header == "t_s,cosine,ramp"
+        finally:
+            await hub.close()
+
+    run(body())

@@ -122,3 +122,41 @@ def test_a_node_without_cymon(dsdl: Path) -> None:
                 await other.close()
 
     run(body())
+
+
+def test_two_nodes_on_one_trigger(dsdl: Path) -> None:
+    async def body() -> None:
+        async with demo_bus(devices=2) as (session, _):
+            scope = ScopeClient(session)
+            follower = DEVICE_ID + 1
+            ports = await scope.trigger_ports([DEVICE_ID, follower])
+            assert ports["shared"] is False and "disabled" in ports["problem"]
+            request = CaptureRequest(
+                channels=[],
+                sample_period_us=100,
+                num_samples=60,
+                pretrigger_samples=20,
+                trigger_mode="rising",
+                trigger_level=0.5,
+                timeout_s=5,
+            )
+            with pytest.raises(ScopeError, match="no shared trigger subject"):
+                await scope.multi_capture({DEVICE_ID: [0], follower: [1]}, DEVICE_ID, request)
+
+            await scope.set_trigger_ports([DEVICE_ID, follower])
+            for node in (DEVICE_ID, follower):  # the ports take effect after a restart
+                assert await session.execute_command(node, 65535) == 0
+            ports = await scope.trigger_ports([DEVICE_ID, follower])
+            assert ports["shared"] is True and ports["subject"] == 220
+
+            captures = await scope.multi_capture({DEVICE_ID: [0], follower: [1, 2]}, DEVICE_ID, request)
+            assert set(captures) == {DEVICE_ID, follower}
+            trigger, other = captures[DEVICE_ID], captures[follower]
+            assert trigger.channels[0][19] < 0.5 <= trigger.channels[0][20]  # on its own condition
+            assert len(other.channels) == 2 and len(other.t) == 60 and other.t[20] == 0.0
+            assert (await scope.status(follower))["state"] == "complete"  # triggered by the event
+
+            with pytest.raises(ScopeError, match="takes part"):
+                await scope.multi_capture({follower: [1]}, DEVICE_ID, request)
+
+    run(body())

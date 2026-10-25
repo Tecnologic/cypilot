@@ -130,6 +130,25 @@ class PublishRequest(BaseModel):
     priority: str = "nominal"
 
 
+class MultiCaptureBody(BaseModel):
+    nodes: dict[int, list[int]] = Field(min_length=1, max_length=16)
+    """Variable IDs per node."""
+    trigger_node: int
+    sample_period_us: float = Field(gt=0)
+    num_samples: int = Field(ge=1, le=65535)
+    pretrigger_samples: int = Field(0, ge=0, le=65534)
+    trigger_mode: str = "immediate"
+    trigger_source: int = Field(0, ge=0, le=255)
+    trigger_level: float = 0.0
+    hysteresis_band: float = 0.0
+    timeout_s: float = Field(30.0, gt=0, le=3600)
+
+
+class TriggerSetup(BaseModel):
+    nodes: list[int] = Field(min_length=1, max_length=16)
+    subject: int = Field(220, ge=0, le=8191)
+
+
 class RunStart(BaseModel):
     name: str = Field("", max_length=200)
     notes: str = Field("", max_length=20000)
@@ -590,6 +609,51 @@ def create_app(hub: BusHub, *, pin: str | None = None) -> FastAPI:
             names = {v["id"]: v["name"] for v in (await scope().info(node_id))["variables"]}
             hub.recording.run.add_capture(node_id, capture, [names.get(c, f"ch{c}") for c in body.channels])
         return vars(capture)
+
+    @api.get("/scope/trigger")
+    async def scope_trigger(nodes: str) -> dict[str, Any]:
+        """Whether the nodes (``nodes=10,11``) share the trigger subject."""
+        ids = [int(n) for n in nodes.split(",") if n.strip()]
+        return dict(await scope().trigger_ports(ids))
+
+    @api.post("/scope/trigger")
+    async def setup_scope_trigger(body: TriggerSetup, request: Request) -> dict[str, Any]:
+        """Writes the shared trigger subject, stores it and restarts the nodes (ports apply at start)."""
+        controller = hub.require_operator(client_of(request))
+        engaged = sorted(set(body.nodes) & controller.engaged)
+        if engaged:
+            raise HTTPException(409, f"disable node {engaged[0]} first: it restarts")
+        for node_id in body.nodes:
+            known(node_id)
+        await scope().set_trigger_ports(body.nodes, body.subject)
+        session = hub.require_session()
+        for node_id in body.nodes:
+            stored = await session.execute_command(node_id, COMMANDS["store"])
+            if stored != 0:
+                raise HTTPException(
+                    409, f"node {node_id} did not store: {COMMAND_STATUS.get(stored, stored)}"
+                )
+            hub.events.emit("command", node_id=node_id, command=COMMANDS["store"], status="success")
+        for node_id in body.nodes:
+            await session.execute_command(node_id, COMMANDS["restart"])
+            hub.events.emit("command", node_id=node_id, command=COMMANDS["restart"], status="success")
+            scope().forget(node_id)
+        return {"subject": body.subject, "nodes": body.nodes}
+
+    @api.post("/scope/capture")
+    async def scope_multi_capture(body: MultiCaptureBody) -> dict[str, Any]:
+        """One capture on several nodes on the trigger of one of them."""
+        for node_id in body.nodes:
+            known(node_id)
+        fields = body.model_dump(exclude={"nodes", "trigger_node"})
+        request = CaptureRequest(channels=[], **fields)
+        captures = await scope().multi_capture(body.nodes, body.trigger_node, request)
+        if hub.recording is not None:
+            for node_id, capture in captures.items():
+                names = {v["id"]: v["name"] for v in (await scope().info(node_id))["variables"]}
+                labels = [names.get(c, f"ch{c}") for c in body.nodes[node_id]]
+                hub.recording.run.add_capture(node_id, capture, labels)
+        return {"trigger_node": body.trigger_node, "captures": {str(n): vars(c) for n, c in captures.items()}}
 
     @api.post("/nodes/{node_id}/scope/read")
     async def scope_read(node_id: int) -> dict[str, Any]:
