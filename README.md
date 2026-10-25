@@ -112,6 +112,23 @@ The state column shows `disabled`, `enabled`, `engaged`, `blocked`
 (external enable missing), `tripped`, `fault`, `E-stop latched`, `settings
 pending` and `local control`, decoded from the heartbeat of UNIMOC nodes.
 
+## Web server
+
+```sh
+cypilot-ctl -i socketcan:can0 serve                # http://localhost:8765/, API docs at /docs
+cypilot-ctl serve --demo 2                         # two demo devices, no hardware
+cypilot-ctl -i canable:/dev/ttyACM0 serve --host 0.0.0.0  # for phones and tablets; prints a PIN
+```
+
+The REST and WebSocket API (`/api/...`, `/ws`) serves the web UI and
+scripts alike. Reading, plots, captures, **stop all** and **E-stop** are open
+to every client. Enabling, setpoints, register writes, commands and
+publications need the **control lease** of one operator
+(`POST /api/control/take`). The operator's WebSocket renews the lease every
+100 ms. When the renewals stop for `--lease` seconds (0.5 s by default), or
+when the WebSocket closes, cypilot puts the engaged drives to sleep. The web UI
+itself follows in W3 ([docs/web_plan.md](docs/web_plan.md)).
+
 ## GUI
 
 ```sh

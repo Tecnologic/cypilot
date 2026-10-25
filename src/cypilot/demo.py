@@ -12,6 +12,9 @@ It behaves like a small drive with cymon-lib:
   on subject 1000 at 20 Hz;
 - a readiness subscription (``reg.udral.service.common.Readiness.0.1`` on
   subject 106) that engages only while refreshed within 0.5 s, like UNIMOC;
+- for cypilot's control it passes as a UNIMOC drive: the probe register
+  ``unimoc.settings.pending`` and the vendor status bits of the heartbeat
+  (power stage enabled and engaged while engaged, E-stop latched);
 - ExecuteCommand (restart, store, emergency stop) and diagnostic records.
 
 Import only after :func:`cypilot.dsdl.ensure_dsdl`.
@@ -32,7 +35,7 @@ import reg.udral.service.common
 import uavcan.diagnostic
 import uavcan.node
 import uavcan.primitive.array
-from pycyphal.application.register import Natural16, Real32, Value
+from pycyphal.application.register import Bit, Natural16, Real32, Value
 
 from cypilot import __version__
 
@@ -195,6 +198,7 @@ class DemoDevice:
         registers["demo.frequency"] = lambda: Value(real32=Real32([self.frequency])), self._set_frequency
         registers["demo.engaged"] = lambda: Value(natural16=Natural16([int(self.engaged)]))
         registers["demo.store_count"] = lambda: Value(natural16=Natural16([self.store_count]))
+        registers["unimoc.settings.pending"] = lambda: Value(bit=Bit([False]))
 
         variables = [("sine", "A"), ("cosine", "A"), ("ramp", ""), ("engaged", "")]
         self.capture = CaptureEngine(variables, self._read_variable, tick_period_us)
@@ -260,9 +264,17 @@ class DemoDevice:
             values = [self.amplitude * math.sin(w), self.amplitude * math.cos(w), 5.0 * float(self.engaged)]
             await self._telemetry.publish(uavcan.primitive.array.Real32_1_0(values))
 
+    def _update_status(self) -> None:
+        """The UNIMOC vendor status bits: power stage (0..2), engaged (3), E-stop latched (5)."""
+        code = (0x01 | 0x08) if self.engaged else 0x00
+        if self.estopped:
+            code |= 0x20
+        self.node.heartbeat_publisher.vendor_specific_status_code = code
+
     async def _set_engaged(self, engaged: bool, why: str) -> None:
         if engaged != self.engaged:
             self.engaged = engaged
+            self._update_status()
             text = f"{'engaged' if engaged else 'disengaged'}: {why}"
             await self._log.publish(
                 uavcan.diagnostic.Record_1(
@@ -281,6 +293,7 @@ class DemoDevice:
         Status = uavcan.node.ExecuteCommand_1.Response
         if request.command == 65531:
             self.estopped = True
+            self._update_status()
             await self._set_engaged(False, "emergency stop")
             return Status(status=Status.STATUS_SUCCESS)
         if request.command == 65530:
@@ -290,6 +303,7 @@ class DemoDevice:
             return Status(status=Status.STATUS_SUCCESS)
         if request.command == 65535:
             self.estopped = False
+            self._update_status()
             return Status(status=Status.STATUS_SUCCESS)
         return Status(status=Status.STATUS_BAD_COMMAND)
 

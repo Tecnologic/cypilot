@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import fnmatch
+import ipaddress
 import json
 import logging
 import os
@@ -233,6 +234,19 @@ def _parser() -> argparse.ArgumentParser:
     sim.add_argument("action", choices=["status", "pause", "run", "advance", "reset"])
     sim.add_argument("cycles", type=int, nargs="?", default=0, help="control cycles for advance")
     sim.set_defaults(handler=_cmd_sim)
+
+    serve = commands.add_parser("serve", help="run the web server: REST and WebSocket API and the web UI")
+    serve.add_argument("--host", default="127.0.0.1", help="address to listen on; 0.0.0.0 for the network")
+    serve.add_argument("--port", type=int, default=8765)
+    serve.add_argument(
+        "--pin", help="PIN for the login; generated and printed when listening beyond this computer"
+    )
+    serve.add_argument(
+        "--lease", type=float, default=0.5, help="control lease in seconds, 0.3 .. 1.0 (default 0.5)"
+    )
+    serve.add_argument("--demo", type=int, default=0, metavar="N", help="start with N demo devices")
+    serve.add_argument("--open", action="store_true", help="open the web UI in the browser")
+    serve.set_defaults(handler=_cmd_serve)
 
     dsdl = commands.add_parser("dsdl", help="download and compile the DSDL now, print where it is")
     dsdl.set_defaults(handler=_cmd_dsdl)
@@ -760,6 +774,68 @@ def _cmd_dsdl(args: argparse.Namespace) -> int:
     origin = str(source.unimoc_path) if source.unimoc_path else f"unimoc {source.unimoc_ref}"
     _print(args, {"source": origin, "compiled": str(path)}, f"{origin}\n{path}")
     return 0
+
+
+def _cmd_serve(args: argparse.Namespace) -> int:
+    import contextlib
+    import secrets
+    import webbrowser
+    from collections.abc import AsyncIterator
+
+    import uvicorn
+    from fastapi import FastAPI
+
+    from cypilot.core.hub import BusConfig, BusHub
+    from cypilot.web.app import create_app
+
+    texts = args.interface or [
+        text for text in (os.environ.get("CYPILOT_IFACE") or os.environ.get("UAVCAN__CAN__IFACE"),) if text
+    ]
+    config: BusConfig | None = None
+    if args.demo or texts:
+        config = BusConfig(
+            interfaces=texts,
+            local_node_id=args.local_node_id,
+            mtu=args.mtu,
+            bitrate=args.bitrate,
+            pnp=args.pnp,
+            demo_devices=args.demo,
+        )
+    pin = args.pin
+    if pin is None and not _loopback(args.host):
+        pin = f"{secrets.randbelow(10**6):06d}"
+    ensure_dsdl()
+    hub = BusHub(lease_time=args.lease)
+    app = create_app(hub, pin=pin)
+    url = f"http://{'localhost' if _loopback(args.host) else args.host}:{args.port}/"
+
+    @contextlib.asynccontextmanager
+    async def lifespan(_: FastAPI) -> AsyncIterator[None]:
+        if config is not None:
+            try:
+                await hub.connect(config)
+            except Exception as error:  # the server runs; connect again from the UI
+                print(f"cypilot-ctl: cannot connect: {error}", file=sys.stderr)
+        print(f"cypilot on {url}" + (f"  PIN {pin}" if pin else ""), flush=True)
+        if args.open:
+            webbrowser.open(url)
+        try:
+            yield
+        finally:
+            await hub.close()  # SLEEP to every engaged drive
+
+    app.router.lifespan_context = lifespan
+    uvicorn.run(app, host=args.host, port=args.port, log_level="warning")
+    return 0
+
+
+def _loopback(host: str) -> bool:
+    if host == "localhost":
+        return True
+    try:
+        return bool(ipaddress.ip_address(host).is_loopback)
+    except ValueError:
+        return False
 
 
 # --- Output --------------------------------------------------------------------

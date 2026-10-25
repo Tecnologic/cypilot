@@ -16,7 +16,8 @@ in Python on pycyphal. The plan, the decisions and the phases are in
   (`sim_control.py`), subjects as channels with the recorder, export and
   replay (`signals.py`), and from the cymon tool: the CANable FD bus
   (`canable.py`), the event hub (`events.py`), monitoring any subject and
-  publications with a lease (`subjects.py`), cymon captures (`scope.py`).
+  publications with a lease (`subjects.py`), cymon captures (`scope.py`),
+  the bus hub of the web server with the control lease (`hub.py`).
   **No Qt import in `core/`.**
 - `src/cypilot/demo.py`: simulated device (registers, telemetry, readiness,
   cymon services) for tests on a python-can virtual bus without the UNIMOC
@@ -24,7 +25,10 @@ in Python on pycyphal. The plan, the decisions and the phases are in
 - `src/cypilot/dsdl.py`: downloads and compiles the DSDL of the pinned UNIMOC
   release (`DEFAULT_UNIMOC_REF`) or a local checkout (`CYPILOT_UNIMOC`).
 - `src/cypilot/simulation.py`: fetches and runs the UNIMOC `native_sim` drive.
-- `src/cypilot/cli.py`: `cypilot-ctl`.
+- `src/cypilot/cli.py`: `cypilot-ctl`; `cypilot-ctl serve` runs the web server.
+- `src/cypilot/web/`: the FastAPI app (`app.py`: REST, WebSocket, PIN login,
+  the static UI in `static/`) on the hub; plan in
+  [docs/web_plan.md](docs/web_plan.md). Tests: `tests/unit/test_web.py`.
 - `src/cypilot/ui/`: the Qt GUI `cypilot`. `bus.py` runs the core on its own
   asyncio thread and hands results to the UI through Qt signals (no `await`
   on the UI thread); `models.py`, `panels.py`, `control_panel.py`,

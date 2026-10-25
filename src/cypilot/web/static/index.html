@@ -1,0 +1,25 @@
+<!doctype html>
+<!-- SPDX-License-Identifier: Apache-2.0 -->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>cypilot</title>
+<style>
+  :root { color-scheme: light dark; font-family: system-ui, sans-serif; }
+  body { max-width: 40rem; margin: 2rem auto; padding: 0 1rem; line-height: 1.5; }
+  code { font-size: 0.95em; }
+</style>
+</head>
+<body>
+<h1>cypilot</h1>
+<p>The web API runs. The user interface comes with phase W3 of the plan; until then the API is
+documented and usable at <a href="docs">/docs</a>.</p>
+<p>Status: <code id="status">…</code></p>
+<script>
+fetch("api/status").then((r) => r.json()).then((s) => {
+  document.getElementById("status").textContent = JSON.stringify(s);
+}).catch((e) => { document.getElementById("status").textContent = String(e); });
+</script>
+</body>
+</html>
