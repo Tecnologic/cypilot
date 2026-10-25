@@ -46,3 +46,35 @@ def browser() -> Iterator[Any]:
             pytest.skip(f"no Chromium for Playwright: {error}")
         yield chromium
         chromium.close()
+
+
+@pytest.fixture
+def fake_nmcli(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[tuple[Path, Path]]:
+    """An executable ``nmcli`` (tests/fake_nmcli.py) on the access point; its state file and its path."""
+    import json
+
+    if sys.platform == "win32":
+        pytest.skip("NetworkManager is Linux only")
+    state = tmp_path / "nmcli.json"
+    state.write_text(
+        json.dumps(
+            {
+                "state": "connected",
+                "connection": "cypilot-ap",
+                "address": "10.42.0.1",
+                "known": ["workshop"],
+                "ap_ssid": "cypilot",
+                "ap_psk": "initial-key",
+                "networks": [["workshop", 70, "WPA2"], ["office", 82, "WPA2"], ["Cafe:Gast", 40, ""]],
+                "passwords": {"workshop": "secret-workshop", "office": "secret-office", "Cafe:Gast": None},
+            }
+        )
+    )
+    nmcli = tmp_path / "nmcli"
+    script = Path(__file__).parent / "fake_nmcli.py"
+    nmcli.write_text(
+        f"#!{sys.executable}\nimport runpy\nrunpy.run_path({str(script)!r}, run_name='__main__')\n"
+    )
+    nmcli.chmod(0o755)
+    monkeypatch.setenv("FAKE_NMCLI_STATE", str(state))
+    yield state, nmcli

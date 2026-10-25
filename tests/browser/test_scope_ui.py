@@ -41,7 +41,11 @@ def test_two_nodes_on_one_trigger(browser: Any, dsdl: Path) -> None:
         page.fill("input[x-model='scope.level']", "0.5")
         page.fill("input[x-model='scope.samples']", "100")
         page.click("#capture")
-        page.wait_for_function("() => /on 2 node/.test(document.querySelector('#scope-state').innerText)")
+        try:
+            page.wait_for_function("() => /on 2 node/.test(document.querySelector('#scope-state').innerText)")
+        except Exception:
+            state, toast = page.inner_text("#scope-state"), page.locator(".toast").inner_text()
+            raise AssertionError(f"no capture: state {state!r}, message {toast!r}") from None
         legend = page.inner_text("#scope-plot .u-legend")
         assert "10 sine [A]" in legend and "11 cosine [A]" in legend
         page.close()

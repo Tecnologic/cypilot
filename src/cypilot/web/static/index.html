@@ -48,7 +48,7 @@
 </header>
 
 <nav class="views">
-  <template x-for="v in views" :key="v.id">
+  <template x-for="v in visibleViews()" :key="v.id">
     <button :class="{active: view === v.id}" @click="show(v.id)" x-text="v.label" :data-view="v.id"></button>
   </template>
 </nav>
@@ -494,6 +494,58 @@
         <button class="small" @click="stopPublish(p)">Stop</button>
       </div>
     </template>
+  </section>
+</main>
+
+<!-- ───────────── Wi-Fi of the Pi ───────────── -->
+<main x-show="view === 'wifi'" class="split">
+  <section class="card">
+    <h2>Wi-Fi</h2>
+    <template x-if="wifi.status">
+      <dl class="info" id="wifi-status">
+        <dt>Now</dt>
+        <dd x-text="wifi.status.access_point ? `own access point ${wifi.access_point?.ssid ?? ''}` : (wifi.status.connection || wifi.status.state)"></dd>
+        <dt>Address</dt><dd class="mono" x-text="wifi.status.addresses.join(', ') || '-'"></dd>
+      </dl>
+    </template>
+    <p class="hint" x-show="!isOperator()">Take control to change the Wi-Fi.</p>
+    <h3>Join a network</h3>
+    <div class="row">
+      <button id="wifi-scan" @click="scanWifi()" x-text="wifi.scanning ? 'scanning ...' : 'Scan'" :disabled="wifi.scanning"></button>
+    </div>
+    <table class="log" x-show="wifi.networks.length">
+      <tbody>
+        <template x-for="n in wifi.networks" :key="n.ssid">
+          <tr :data-ssid="n.ssid" @click="pickNetwork(n)" class="pick">
+            <td x-text="n.ssid + (n.in_use ? ' (connected)' : '')"></td><td x-text="n.signal + ' %'"></td><td x-text="n.security"></td>
+          </tr>
+        </template>
+      </tbody>
+    </table>
+    <div class="form">
+      <label>Network (SSID) <input id="wifi-ssid" x-model="wifi.ssid" maxlength="32"></label>
+      <label>Password <input id="wifi-password" type="password" x-model="wifi.password" autocomplete="off" placeholder="none for an open network"></label>
+    </div>
+    <div class="row"><button id="wifi-join" class="primary" @click="joinWifi()" :disabled="!isOperator() || !wifi.ssid">Join</button></div>
+    <h3>Known networks</h3>
+    <p class="hint" x-show="!wifi.known.length">None: the Pi opens its access point at the boot.</p>
+    <template x-for="k in wifi.known" :key="k.name">
+      <div class="row tight" :data-known="k.name"><span x-text="k.name"></span>
+        <button class="small" @click="forgetWifi(k.name)" :disabled="!isOperator()">Forget</button></div>
+    </template>
+  </section>
+  <section class="card">
+    <h2>Access point</h2>
+    <p class="hint">The Pi opens it at the boot when no known network is in range; cypilot is then at
+      <span class="mono" x-text="`http://${wifi.access_point?.address ?? '10.42.0.1'}/`"></span>.</p>
+    <div class="form">
+      <label>SSID <input id="ap-ssid" x-model="wifi.apSsid" maxlength="32"></label>
+      <label>New key <input id="ap-key" type="password" x-model="wifi.apKey" autocomplete="new-password" placeholder="unchanged"></label>
+    </div>
+    <div class="row">
+      <button id="ap-save" @click="saveAccessPoint()" :disabled="!isOperator()">Save</button>
+      <button id="ap-start" @click="startAccessPoint()" :disabled="!isOperator() || wifi.status?.access_point">Open it now</button>
+    </div>
   </section>
 </main>
 

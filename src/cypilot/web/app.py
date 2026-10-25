@@ -43,6 +43,7 @@ from cypilot.core.signals import SignalError, load_type, sources, type_name
 from cypilot.core.sim_control import SimControl, SimulationError
 from cypilot.core.subjects import jsonable
 from cypilot.core.transport import InterfaceError, find_adapters
+from cypilot.wifi import Wifi, WifiError
 
 _logger = logging.getLogger(__name__)
 STATIC_DIR = Path(__file__).parent / "static"
@@ -149,6 +150,16 @@ class TriggerSetup(BaseModel):
     subject: int = Field(220, ge=0, le=8191)
 
 
+class WifiConnect(BaseModel):
+    ssid: str = Field(min_length=1, max_length=32)
+    password: str | None = Field(None, max_length=63)
+
+
+class AccessPoint(BaseModel):
+    ssid: str | None = Field(None, min_length=1, max_length=32)
+    key: str | None = Field(None, min_length=8, max_length=63)
+
+
 class RunStart(BaseModel):
     name: str = Field("", max_length=200)
     notes: str = Field("", max_length=20000)
@@ -226,7 +237,8 @@ def _token(headers: Any, cookies: Any, query: Any) -> str | None:
     return cookies.get(TOKEN_COOKIE) or query.get("token")
 
 
-def create_app(hub: BusHub, *, pin: str | None = None) -> FastAPI:
+def create_app(hub: BusHub, *, pin: str | None = None, wifi: Wifi | None = None) -> FastAPI:
+    """``wifi``: the Wi-Fi settings of the Pi in the UI (``serve --wifi``); None: none."""
     app = FastAPI(title="cypilot", version=__version__)
     app.state.hub = hub
     auth = Auth(pin)
@@ -249,6 +261,10 @@ def create_app(hub: BusHub, *, pin: str | None = None) -> FastAPI:
 
     @app.exception_handler(RunError)
     async def run_conflict(_: Request, error: Exception) -> JSONResponse:
+        return JSONResponse({"detail": str(error)}, status_code=409)
+
+    @app.exception_handler(WifiError)
+    async def wifi_failed(_: Request, error: Exception) -> JSONResponse:
         return JSONResponse({"detail": str(error)}, status_code=409)
 
     @app.exception_handler(ControlError)
@@ -663,6 +679,54 @@ def create_app(hub: BusHub, *, pin: str | None = None) -> FastAPI:
     async def scope_disarm(node_id: int) -> dict[str, Any]:
         await scope().disarm(node_id)
         return {"ok": True}
+
+    # --- Wi-Fi of the Pi (serve --wifi): reading for all, changes for the operator ----
+
+    def require_wifi() -> Wifi:
+        if wifi is None:
+            raise HTTPException(404, "this server does not manage the Wi-Fi (serve --wifi)")
+        return wifi
+
+    @api.get("/wifi")
+    async def wifi_state() -> dict[str, Any]:
+        if wifi is None or not wifi.available:
+            return {"available": False}
+        return {
+            "available": True,
+            "status": await wifi.status(),
+            "known": await wifi.known(),
+            "access_point": await wifi.access_point(),
+        }
+
+    @api.get("/wifi/scan")
+    async def wifi_scan() -> list[dict[str, Any]]:
+        return [vars(network) for network in await require_wifi().scan()]
+
+    def wifi_operator(request: Request) -> Wifi:
+        hub.require_operator(client_of(request))
+        return require_wifi()
+
+    @api.post("/wifi/connect")
+    async def wifi_connect(body: WifiConnect, request: Request) -> dict[str, Any]:
+        """Joins a network: the browsers on the access point lose the Pi until they follow."""
+        status = await wifi_operator(request).connect(body.ssid, body.password or None)
+        hub.events.emit("wifi", action="connected", status=status)
+        return status
+
+    @api.delete("/wifi/known/{name}")
+    async def wifi_forget(name: str, request: Request) -> dict[str, Any]:
+        await wifi_operator(request).forget(name)
+        return {"ok": True}
+
+    @api.put("/wifi/access-point")
+    async def wifi_set_access_point(body: AccessPoint, request: Request) -> dict[str, Any]:
+        return await wifi_operator(request).set_access_point(body.ssid, body.key)
+
+    @api.post("/wifi/access-point/start")
+    async def wifi_start_access_point(request: Request) -> dict[str, Any]:
+        status = await wifi_operator(request).start_access_point()
+        hub.events.emit("wifi", action="access point", status=status)
+        return status
 
     # --- Runs: started and stopped only by the user; any client may record ---------
 

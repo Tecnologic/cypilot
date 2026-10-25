@@ -1,6 +1,6 @@
 # One app: cypilot with the cymon features and a web front end
 
-Status (2026-10-25): **decided; W1 to W5 done** (section 8). It changes decisions
+Status (2026-10-25): **decided; W1 to W5 done, W6 set up (the day on the bench is open)** (section 8). It changes decisions
 of [plan.md](plan.md) (section 2: the Qt GUI, and cymon as a separate tool
 the GUI depends on) and replaces its phases G5 to G7 by the phases W0 to W7
 below. The firmware contract (plan sections 5.1, 6, 7.1, 9) stays as it is.
@@ -222,7 +222,7 @@ connected, and a browser that connects mid-run sees it.
 | W3 | **Done 2026-10-25 (replay of recordings moves to W4):** **Web UI** with the G2 to G4 functions: bus, nodes with chips, registers with the description file, control, plots, simulation, log; responsive for the phone; then the **Qt GUI is removed** | Browser tests with Playwright (headless Chromium) against the simulation, also at phone size |
 | W4 | **Done 2026-10-25 (the telemetry rate stays as configured):** **Run log:** runs started and stopped by the user, raw frames plus decoded channels plus `run.json`, list, download and delete in the web app, replay, free-space limit | A run of an engage, a setpoint step and a trip in the simulation, downloaded, replayed and deleted from the UI |
 | W5 | **Done 2026-10-25:** **Scope** (old G5): cymon captures, several nodes on one shared trigger, overlay, stored in the run | Capture of two simulated drives on one trigger |
-| W6 | **Raspberry Pi:** setup script, systemd service, access point, CAN FD HAT; load test (four drives, all subjects recorded, two browsers) | Runs a day on the cart bench with the drives |
+| W6 | **Set up 2026-10-25 (MCP2518FD HAT; known Wi-Fi, else the access point; `scripts/pi-setup.sh`, `docs/pi.md`, `scripts/load_test.py`); the day on the bench is open:** **Raspberry Pi:** setup script, systemd service, access point, CAN FD HAT; load test (four drives, all subjects recorded, two browsers) | Runs a day on the cart bench with the drives |
 | W7 | **Packaging and the end of cymon:** wheel, Windows and Linux executables without Qt, README workflows; `Tecnologic/cymon` archived | Install on a clean Windows machine and a fresh Pi |
 
 Old phases: G5 becomes W5, G6 (cart, e-bike, VDC and BMS views) comes after

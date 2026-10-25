@@ -14,7 +14,9 @@ from typing import Any
 class WebServer:
     """``cypilot.web`` on a free port, served by uvicorn on its own thread (as ``cypilot-ctl serve``)."""
 
-    def __init__(self, *, pin: str | None = None, lease_time: float = 0.5, runs: Path | None = None) -> None:
+    def __init__(
+        self, *, pin: str | None = None, lease_time: float = 0.5, runs: Path | None = None, wifi: Any = None
+    ) -> None:
         import uvicorn
 
         from cypilot.core.hub import BusHub
@@ -22,7 +24,7 @@ class WebServer:
         from cypilot.web.app import create_app
 
         self.hub = BusHub(lease_time=lease_time, runs=RunStore(runs) if runs is not None else None)
-        app = create_app(self.hub, pin=pin)
+        app = create_app(self.hub, pin=pin, wifi=wifi)
         hub = self.hub
 
         @contextlib.asynccontextmanager
