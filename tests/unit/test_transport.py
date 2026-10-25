@@ -59,13 +59,17 @@ def test_socketcan_defaults_to_can_fd() -> None:
 
 
 def test_several_interfaces_of_one_redundant_bus() -> None:
-    specs = parse_interfaces(["socketcan:vcan0 socketcan:vcan1", "canable:COM5+pcan:PCAN_USBBUS1"])
+    specs = parse_interfaces(
+        ["virtual:a virtual:b", "canable:COM5+pcan:PCAN_USBBUS1", "slcan:COM6,udp:10.0.0.1"]
+    )
     assert [spec.text for spec in specs] == [
-        "socketcan:vcan0",
-        "socketcan:vcan1",
+        "virtual:a",
+        "virtual:b",
         "canable:COM5",
         "pcan:PCAN_USBBUS1",
-    ] or sys.platform != "linux"
+        "slcan:COM6",
+        "udp:10.0.0.1",
+    ]
     with pytest.raises(InterfaceError, match="no interface"):
         parse_interfaces(["  "])
 
