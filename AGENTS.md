@@ -31,6 +31,8 @@ changes.
   release (`DEFAULT_UNIMOC_REF`) or a local checkout (`CYPILOT_UNIMOC`).
 - `src/cypilot/simulation.py`: fetches and runs the UNIMOC `native_sim` drive.
 - `src/cypilot/cli.py`: `cypilot-ctl`; `cypilot-ctl serve` runs the web server.
+- `src/cypilot/wifi.py`: the Wi-Fi of the Pi over `nmcli` for the web app
+  (`serve --wifi`); tests with `tests/fake_nmcli.py` (`fake_nmcli` fixture).
 - `src/cypilot/web/`: the FastAPI app (`app.py`: REST, WebSocket, PIN login)
   on the hub, and the static UI in `static/` (`index.html`, `app.js`,
   `app.css`; Alpine.js and uPlot vendored in `static/vendor/`, no build step).

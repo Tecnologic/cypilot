@@ -151,6 +151,8 @@ bottom bar):
 - **Runs:** see below.
 - **Monitor:** any subject with any type, and publications with a lease.
 - **Log:** the `uavcan.diagnostic.Record` messages of all nodes.
+- **Wi-Fi** (on the Pi, `serve --wifi`): the current network, scan, join and
+  forget networks, the access point; changes need control.
 
 The REST and WebSocket API (`/api/...`, `/ws`) serves the UI and scripts
 alike.
@@ -207,7 +209,8 @@ Within that:
 
 `sudo scripts/pi-setup.sh` sets up a Pi with an MCP2518FD CAN FD HAT as the
 box on the cart: `can0`, the web app as a service on port 80 with a PIN, runs
-on the SSD, and Wi-Fi on a known network or the Pi's own access point. See
+on the SSD, and Wi-Fi on a known network or the Pi's own access point, both
+set in the web app. See
 [docs/pi.md](docs/pi.md).
 
 ## Against the simulation

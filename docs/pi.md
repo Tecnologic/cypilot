@@ -60,6 +60,26 @@ the PIN and the key unless you give new ones.
   within the lease time (0.5 s).
 - `journalctl -u cypilot -f` shows the log; `candump can0` shows the bus.
 
+## Wi-Fi in the web app
+
+The **Wi-Fi** view, shown only on the Pi, displays the current network and
+the address. With control taken, you can:
+
+- **Join a network:** scan, pick one, enter its password. The Pi then
+  remembers it as a known network. Devices on the access point lose cypilot
+  until they join that network too (`http://cypilot.local/`). If joining
+  fails, the Pi opens its access point again, so the cart is never left
+  without a network.
+- **Forget** a known network.
+- **Change the access point:** its name and key apply the next time it
+  opens. **Open it now** switches to it at once.
+
+cypilot runs `nmcli` for this (`cypilot-ctl serve --wifi`, `CYPILOT_WIFI=1`
+in `/etc/cypilot/cypilot.env`). The polkit rule
+`/etc/polkit-1/rules.d/50-cypilot-network.rules` lets the user `cypilot` use
+NetworkManager. A second run of the setup keeps the access point key as the
+web app last set it.
+
 ## Load test
 
 `scripts/load_test.py` runs the server with a recording run, and opens

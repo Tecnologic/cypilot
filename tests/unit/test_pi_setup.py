@@ -41,6 +41,9 @@ def test_the_files_of_the_pi(tmp_path: Path) -> None:
     )
     assert env["CYPILOT_RUNS"] == "/mnt/ssd/runs" and len(env["CYPILOT_PIN"]) == 6
     assert (tmp_path / "usr/local/sbin/cypilot-wifi-fallback").exists()
+    assert env["CYPILOT_WIFI"] == "1"  # the Wi-Fi view
+    rule = (tmp_path / "etc/polkit-1/rules.d/50-cypilot-network.rules").read_text()
+    assert 'subject.user == "cypilot"' in rule and "org.freedesktop.NetworkManager." in rule
     assert "+ hostnamectl set-hostname cart" in out
     assert "+ nmcli connection add type wifi" in out and "802-11-wireless.mode ap" in out
     assert "cypilot-ctl dsdl" in out  # fetched while online

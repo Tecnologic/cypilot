@@ -11,7 +11,8 @@
 #   - the service cypilot.service: the web app on port 80 on can0, with a PIN,
 #     restarted when it stops; runs in /var/lib/cypilot/runs (or --runs);
 #   - Wi-Fi: a known network when it is in range, else the Pi's own access
-#     point (NetworkManager hotspot), checked at every boot;
+#     point (NetworkManager hotspot), checked at every boot; both can be
+#     changed in the web app (Wi-Fi view; a polkit rule lets it use nmcli);
 #   - the host name for http://<name>.local (mDNS by avahi).
 #
 #   sudo scripts/pi-setup.sh                         # all defaults
@@ -123,6 +124,10 @@ kept() {
 
 pin="${pin:-$(kept CYPILOT_PIN)}"
 pin="${pin:-$(printf '%06d' $((10#$(od -An -N4 -tu4 /dev/urandom | tr -d ' ') % 1000000)))}"
+# The key as it is now: it may have been changed in the web app since the last run.
+if [[ -z $psk && $dry_run == no ]] && nmcli -t -f NAME connection show 2>/dev/null | grep -qx cypilot-ap; then
+  psk="$(nmcli -s -g 802-11-wireless-security.psk connection show cypilot-ap 2>/dev/null || true)"
+fi
 psk="${psk:-$(kept CYPILOT_AP_PSK)}"
 psk="${psk:-$(od -An -N12 -tx1 /dev/urandom | tr -d ' \n')}"
 
@@ -176,6 +181,7 @@ CYPILOT_PIN=$pin
 CYPILOT_RUNS=$runs
 CYPILOT_CACHE=$cache
 CYPILOT_AP_PSK=$psk
+CYPILOT_WIFI=1
 EOF
 run chmod 600 "$env_file"
 
@@ -234,6 +240,16 @@ ExecStart=/usr/local/sbin/cypilot-wifi-fallback
 WantedBy=multi-user.target
 EOF
 fi
+
+# The web app changes the Wi-Fi with nmcli as the user cypilot (the Wi-Fi view).
+write /etc/polkit-1/rules.d/50-cypilot-network.rules <<'EOF'
+// cypilot (scripts/pi-setup.sh): the web app may scan, join and forget networks and open the access point.
+polkit.addRule(function (action, subject) {
+  if (subject.user == "cypilot" && action.id.indexOf("org.freedesktop.NetworkManager.") == 0) {
+    return polkit.Result.YES;
+  }
+});
+EOF
 
 # --- Host name and services --------------------------------------------------------
 

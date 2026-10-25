@@ -266,6 +266,12 @@ def _parser() -> argparse.ArgumentParser:
         "--runs-stop", type=int, default=200, metavar="MB", help="a recording run stops below this free space"
     )
     serve.add_argument("--open", action="store_true", help="open the web UI in the browser")
+    serve.add_argument(
+        "--wifi",
+        action="store_true",
+        default=os.environ.get("CYPILOT_WIFI") == "1",
+        help="Wi-Fi settings of this computer in the UI, with NetworkManager (the Pi; $CYPILOT_WIFI=1)",
+    )
     serve.set_defaults(handler=_cmd_serve)
 
     dsdl = commands.add_parser("dsdl", help="download and compile the DSDL now, print where it is")
@@ -828,7 +834,9 @@ def _cmd_serve(args: argparse.Namespace) -> int:
     ensure_dsdl()
     limits = RunLimits(warn_free=args.runs_warn << 20, stop_free=args.runs_stop << 20)
     hub = BusHub(lease_time=args.lease, runs=RunStore(args.runs, limits))
-    app = create_app(hub, pin=pin)
+    from cypilot.wifi import Wifi
+
+    app = create_app(hub, pin=pin, wifi=Wifi() if args.wifi else None)
     url = f"http://{'localhost' if _loopback(args.host) else args.host}:{args.port}/"
 
     @contextlib.asynccontextmanager

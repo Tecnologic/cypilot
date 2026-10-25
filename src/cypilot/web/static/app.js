@@ -94,7 +94,7 @@ window.cypilot = function () {
       { id: 'bus', label: 'Bus' }, { id: 'nodes', label: 'Nodes' }, { id: 'registers', label: 'Registers' },
       { id: 'control', label: 'Control' }, { id: 'plots', label: 'Plots' }, { id: 'scope', label: 'Scope' },
       { id: 'sim', label: 'Simulation' }, { id: 'runs', label: 'Runs' }, { id: 'expert', label: 'Monitor' },
-      { id: 'log', label: 'Log' },
+      { id: 'log', label: 'Log' }, { id: 'wifi', label: 'Wi-Fi' },
     ],
     view: 'nodes',
     ws: null,
@@ -142,6 +142,8 @@ window.cypilot = function () {
     logNode: '',
     runs: { available: false, active: null, space: null, list: [], selected: [], open: null, detail: null },
     replay: null,
+    wifi: { available: false, status: null, known: [], access_point: null, networks: [], scanning: false,
+            ssid: '', password: '', apSsid: '', apKey: '' },
 
     async init() {
       window.addEventListener('keydown', (e) => {
@@ -179,6 +181,7 @@ window.cypilot = function () {
         if (!this.status.connected) { this.view = 'bus'; this.searchAdapters(); }
         this.log = await api('GET', '/api/log').catch(() => []);
         await this.loadRuns();
+        await this.loadWifi();
       } catch (e) { this.fail(e); }
     },
 
@@ -253,6 +256,7 @@ window.cypilot = function () {
         case 'publisher': this.onPublisher(e); break;
         case 'capture': this.scope.state = e.state; break;
         case 'run': this.onRun(e); break;
+        case 'wifi': this.loadWifi(); break;
       }
     },
 
@@ -859,6 +863,60 @@ window.cypilot = function () {
       return (h ? `${h}:${String(m).padStart(2, '0')}` : `${m}`) + `:${String(s % 60).padStart(2, '0')}`;
     },
     fmtDate(t) { return new Date(t * 1000).toLocaleString(undefined, { hour12: false }); },
+
+    // --- Wi-Fi of the Pi (serve --wifi) --------------------------------------------
+
+    visibleViews() { return this.views.filter(v => v.id !== 'wifi' || this.wifi.available); },
+    async loadWifi() {
+      try {
+        const state = await api('GET', '/api/wifi');
+        this.wifi.available = state.available;
+        if (!state.available) return;
+        Object.assign(this.wifi, { status: state.status, known: state.known, access_point: state.access_point });
+        if (!this.wifi.apSsid) this.wifi.apSsid = state.access_point?.ssid ?? '';
+      } catch (e) { this.fail(e); }
+    },
+    async scanWifi() {
+      this.wifi.scanning = true;
+      try { this.wifi.networks = await api('GET', '/api/wifi/scan'); } catch (e) { this.fail(e); }
+      this.wifi.scanning = false;
+    },
+    pickNetwork(n) { this.wifi.ssid = n.ssid; this.wifi.password = ''; },
+    async joinWifi() {
+      const w = this.wifi;
+      const warning = w.status?.access_point
+        ? ` Devices on the access point lose cypilot: join "${w.ssid}" with them too and open http://cypilot.local/.` : '';
+      if (!confirm(`Join the Wi-Fi "${w.ssid}"?${warning} If it fails, the access point opens again.`)) return;
+      this.busy = `joining ${w.ssid} ...`;
+      try {
+        const status = await api('POST', '/api/wifi/connect', { ssid: w.ssid, password: w.password || null });
+        this.notify(`Joined ${status.connection}: ${status.addresses.join(', ')}`);
+        w.password = '';
+      } catch (e) { this.fail(e); }
+      this.busy = '';
+      await this.loadWifi();
+    },
+    async forgetWifi(name) {
+      if (!confirm(`Forget the Wi-Fi "${name}"? The Pi no longer joins it by itself.`)) return;
+      try { await api('DELETE', `/api/wifi/known/${encodeURIComponent(name)}`); } catch (e) { this.fail(e); }
+      await this.loadWifi();
+    },
+    async saveAccessPoint() {
+      const w = this.wifi;
+      try {
+        await api('PUT', '/api/wifi/access-point', { ssid: w.apSsid || null, key: w.apKey || null });
+        w.apKey = '';
+        this.notify('Saved: the access point uses it the next time it opens.');
+      } catch (e) { this.fail(e); }
+      await this.loadWifi();
+    },
+    async startAccessPoint() {
+      if (!confirm('Open the access point now? Devices on the current Wi-Fi lose cypilot until they join it.')) return;
+      this.busy = 'opening the access point ...';
+      try { await api('POST', '/api/wifi/access-point/start'); } catch (e) { this.fail(e); }
+      this.busy = '';
+      await this.loadWifi();
+    },
 
     // --- Log ----------------------------------------------------------------------
 
