@@ -260,3 +260,49 @@ def test_the_websocket_renews_the_lease(dsdl: Path) -> None:
             await hub.close()
 
     run(body())
+
+
+def test_register_descriptions_from_a_file(dsdl: Path, tmp_path: Path, monkeypatch: Any) -> None:
+    file = {
+        "schema": 1,
+        "firmware": {"name": "unimoc", "version": "0.3.0"},
+        "registers": [
+            {
+                "name": "demo.amplitude",
+                "type": "real32",
+                "size": 1,
+                "mutable": True,
+                "persistent": False,
+                "unit": "A",
+                "help": "Amplitude of the sine",
+            }
+        ],
+    }
+    (tmp_path / "registers.json").write_text(json.dumps(file))
+    monkeypatch.setenv("CYPILOT_REGISTERS", str(tmp_path / "registers.json"))
+
+    async def body() -> None:
+        async with web(connect=False) as (_, client):
+            result = (await client.get("/api/descriptions")).json()
+            assert result["available"] is True and result["firmware"]["version"] == "0.3.0"
+            assert result["registers"]["demo.amplitude"]["unit"] == "A"
+
+    run(body())
+
+    monkeypatch.setenv("CYPILOT_REGISTERS", str(tmp_path / "missing.json"))
+
+    async def missing() -> None:
+        async with web(connect=False) as (_, client):
+            result = (await client.get("/api/descriptions")).json()
+            assert result["available"] is False and result["registers"] == {}
+
+    run(missing())
+
+
+def test_the_drive_target(dsdl: Path) -> None:
+    async def body() -> None:
+        async with web() as (_, client):
+            target = (await client.get(f"/api/nodes/{DEVICE_ID}/target")).json()
+            assert target == {"node_id": DEVICE_ID, "readiness": 106, "setpoints": {}}
+
+    run(body())

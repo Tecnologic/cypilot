@@ -3,9 +3,9 @@
 
 from __future__ import annotations
 
-import gc
 import logging
 import os
+import sys
 from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
@@ -24,27 +24,25 @@ def dsdl() -> Path:
     return ensure_dsdl()
 
 
-@pytest.fixture(scope="session")
-def qapp() -> Iterator[Any]:
-    """The QApplication of the GUI tests, on the offscreen platform unless another one is set.
+@pytest.fixture(scope="module")
+def browser() -> Iterator[Any]:
+    """Headless Chromium of Playwright for the web UI tests.
 
-    At the end it deletes every top-level widget while the application still
-    exists: widgets left to the interpreter's shutdown can outlive the
-    QApplication, which ended a Windows test run with exit code 1 after all
-    tests had passed.
+    Per module: Playwright's sync API runs an event loop on the main thread while
+    it is open, and the other tests use ``asyncio.run``.
+
+    ``CYPILOT_CHROMIUM`` names a Chromium binary when Playwright's own is not
+    installed (``python -m playwright install chromium``). The tests skip without
+    a browser, but not on Linux in CI.
     """
-    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
-    widgets = pytest.importorskip("PySide6.QtWidgets")
-    app = widgets.QApplication.instance() or widgets.QApplication([])
-    from cypilot.ui.main_window import collect_garbage_on_the_ui_thread
-
-    collector = collect_garbage_on_the_ui_thread()  # as the application does
-    yield app
-    collector.timer.stop()
-    gc.enable()
-    for widget in app.topLevelWidgets():
-        widget.close()
-        widget.deleteLater()
-    app.processEvents()
-    gc.collect()
-    app.processEvents()
+    sync_api = pytest.importorskip("playwright.sync_api")
+    executable = os.environ.get("CYPILOT_CHROMIUM")
+    with sync_api.sync_playwright() as playwright:
+        try:
+            chromium = playwright.chromium.launch(executable_path=executable or None)
+        except Exception as error:
+            if os.environ.get("CI") and sys.platform == "linux":
+                raise
+            pytest.skip(f"no Chromium for Playwright: {error}")
+        yield chromium
+        chromium.close()

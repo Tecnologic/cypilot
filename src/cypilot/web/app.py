@@ -362,6 +362,15 @@ def create_app(hub: BusHub, *, pin: str | None = None) -> FastAPI:
         hub.events.emit("command", node_id=node_id, command=code, status=status_text)
         return {"command": code, "status": status_text, "ok": result == 0}
 
+    descriptions: dict[str, Any] = {}
+
+    @api.get("/descriptions")
+    async def register_descriptions() -> dict[str, Any]:
+        """The UNIMOC register description file: ``$CYPILOT_REGISTERS`` or that of the pinned release."""
+        if not descriptions:
+            descriptions.update(await asyncio.to_thread(_load_descriptions))
+        return descriptions
+
     @api.get("/log")
     async def log() -> list[dict[str, Any]]:
         return list(hub.log)
@@ -382,6 +391,20 @@ def create_app(hub: BusHub, *, pin: str | None = None) -> FastAPI:
     @api.post("/control/release")
     async def release_control(request: Request) -> dict[str, Any]:
         return await hub.release_control(client_of(request))
+
+    @api.get("/nodes/{node_id}/target")
+    async def drive_target(node_id: int) -> dict[str, Any]:
+        """Where a drive listens: readiness and setpoint subjects, with the components per setpoint."""
+        known(node_id)
+        target = await find_target(hub.require_session(), node_id)
+        return {
+            "node_id": node_id,
+            "readiness": target.readiness,
+            "setpoints": {
+                mode.name.lower(): {"subject": subject, "components": mode.components}
+                for mode, subject in target.setpoints.items()
+            },
+        }
 
     @api.post("/nodes/{node_id}/enable")
     async def enable(node_id: int, request: Request) -> dict[str, Any]:
@@ -596,6 +619,22 @@ def create_app(hub: BusHub, *, pin: str | None = None) -> FastAPI:
 
     app.mount("/", StaticFiles(directory=STATIC_DIR, html=True), name="static")
     return app
+
+
+def _load_descriptions() -> dict[str, Any]:
+    import os
+
+    from cypilot.core.descriptions import DescriptionError, load_descriptions
+    from cypilot.simulation import SimulationError, fetch_register_descriptions
+
+    try:
+        configured = os.environ.get("CYPILOT_REGISTERS")
+        loaded = load_descriptions(Path(configured) if configured else fetch_register_descriptions())
+    except (DescriptionError, SimulationError) as error:
+        _logger.warning("no register descriptions: %s", error)
+        return {"available": False, "error": str(error), "firmware": {}, "registers": {}}
+    registers = {name: vars(d) | {"default": list(d.default)} for name, d in loaded.registers.items()}
+    return {"available": True, "firmware": loaded.firmware, "registers": registers}
 
 
 def _json_default(value: Any) -> Any:

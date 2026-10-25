@@ -49,7 +49,7 @@ class PowerStage(enum.IntEnum):
 
 
 class Chip(enum.Enum):
-    """What the GUI shows as the state of a node; several may apply at once."""
+    """What the UI shows as the state of a node; several may apply at once."""
 
     OFFLINE = "offline"
     E_STOP = "E-stop latched"

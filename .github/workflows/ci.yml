@@ -36,9 +36,9 @@ jobs:
         with:
           python-version: ${{ matrix.python }}
       - run: pip install -e '.[dev]'
-      # Qt needs EGL and xkbcommon even on the offscreen platform of the GUI tests.
+      # Chromium for the browser tests of the web UI (they skip on Windows).
       - if: runner.os == 'Linux'
-        run: sudo apt-get update -q && sudo apt-get install -y -q libegl1 libxkbcommon0 libfontconfig1
+        run: python -m playwright install --with-deps chromium
       # The compiled DSDL and the native_sim binary of the pinned UNIMOC release.
       - uses: actions/cache@v4
         with:
