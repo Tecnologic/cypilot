@@ -1,6 +1,8 @@
 # cypilot plan
 
-Status (2026-10-24): **G0 to G3 done, G4 in part** (section 12), the rest is planned. Moved here
+Status (2026-10-25): **G0 to G3 done, G4 in part** (section 12). **Proposed:** one app with the
+cymon features and a web front end instead of Qt, phases W0 to W7 ([web_plan.md](web_plan.md));
+it replaces G5 to G7 once decided. Moved here
 from UNIMOC `docs/gui_plan.md`, which keeps the contract with the firmware
 (sections 5.1, 6, 7.1 and 9 below: register description file, vendor status
 bits, readiness per node, firmware support); changes to those start in UNIMOC.
