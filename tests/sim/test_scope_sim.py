@@ -108,8 +108,9 @@ def test_two_drives_on_one_trigger(drives: tuple[SimInstance, SimInstance]) -> N
                 response = await client.post("/api/connect", json={"interfaces": [first.slcan_interfaces[0]]})
                 assert response.status_code == 200, response.text
                 session = hub.require_session()
-                await session.wait_for_node(10)
-                await session.wait_for_node(11, timeout=10)
+                # Slow on CI: both drives over one classic slcan terminal (the other tests wait 30 s too).
+                await session.wait_for_node(10, timeout=30)
+                await session.wait_for_node(11, timeout=30)
 
                 subscriber = session.node.make_subscriber(cymon.TriggerEvent_0_1, TRIGGER)
 
@@ -142,7 +143,12 @@ def test_two_drives_on_one_trigger(drives: tuple[SimInstance, SimInstance]) -> N
 
     terminals = [instance.slcan_interfaces[-1].removeprefix("slcan:") for instance in (first, second)]
     with Bridge(*terminals):
-        asyncio.run(body())
+        try:
+            asyncio.run(body())
+        except BaseException:
+            for instance in (first, second):
+                print(f"--- output of drive {instance.node_id}:", *list(instance.output)[-30:], sep="\n")
+            raise
     times = dict(events)
     assert {10, 11} <= set(times), events  # the follower published its own event when the trigger reached it
     delay = times[11] - times[10]
