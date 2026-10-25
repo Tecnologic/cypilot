@@ -30,6 +30,7 @@ from cypilot.core.control import (
 )
 from cypilot.core.profiles import Profile, ProfileError
 from cypilot.core.registers import Register, RegisterError, parse_like
+from cypilot.core.scope import TRIGGER_MODES, Capture, CaptureRequest, ScopeClient, ScopeError
 from cypilot.core.session import DEFAULT_LOCAL_NODE_ID, NodeSummary, Session
 from cypilot.core.signals import Recorder, SignalError, sources, subscribe
 from cypilot.core.sim_control import SimControl, SimStatus, SimulationError
@@ -72,6 +73,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         ControlError,
         SimulationError,
         SignalError,
+        ScopeError,
         RegisterError,
         TimeoutError,
         ValueError,
@@ -198,6 +200,33 @@ def _parser() -> argparse.ArgumentParser:
     record.add_argument("--for", dest="duration", type=float, default=2.0, help="seconds (default 2)")
     record.add_argument("--out", type=Path, required=True, help="directory for the CSV files")
     record.set_defaults(handler=_cmd_record)
+
+    monitor = commands.add_parser("monitor", help="receive any subject with any DSDL type for a while")
+    monitor.add_argument("subject", type=int, help="subject-ID")
+    monitor.add_argument("type", help="DSDL type, e.g. unimoc.drive.Telemetry.0.1 or uavcan.node.Heartbeat")
+    monitor.add_argument("--for", dest="duration", type=float, default=2.0, help="seconds (default 2)")
+    monitor.set_defaults(handler=_cmd_monitor)
+
+    scope = commands.add_parser("scope", help="cymon trace variables of a node, or a triggered capture")
+    scope.add_argument("node", type=int)
+    scope.add_argument("channels", nargs="*", type=int, help="variable indices to capture (none: list them)")
+    scope.add_argument("--period", type=float, default=100.0, help="sample period [us] (default 100)")
+    scope.add_argument("--samples", type=int, default=200, help="samples per channel (default 200)")
+    scope.add_argument("--pretrigger", type=int, default=0, help="samples before the trigger (default 0)")
+    scope.add_argument(
+        "--trigger",
+        choices=sorted(TRIGGER_MODES),
+        default="immediate",
+        help="trigger mode (default immediate)",
+    )
+    scope.add_argument("--source", type=int, default=0, help="trigger variable index (default 0)")
+    scope.add_argument("--level", type=float, default=0.0, help="trigger level (default 0)")
+    scope.add_argument("--band", type=float, default=0.0, help="hysteresis band (default 0)")
+    scope.add_argument(
+        "--timeout", type=float, default=30.0, help="seconds to wait for the trigger (default 30)"
+    )
+    scope.add_argument("--out", type=Path, help="CSV file of the capture (time column first)")
+    scope.set_defaults(handler=_cmd_scope)
 
     sim = commands.add_parser("sim", help="pause, run, advance or reset a simulated UNIMOC drive")
     sim.add_argument("node", type=int)
@@ -596,6 +625,97 @@ def _cmd_record(args: argparse.Namespace) -> int:
     counts = {key: recorder.count(key) for key in recorder.source_keys()}
     lines = [f"{key}: {count} samples" for key, count in counts.items()] or ["nothing received"]
     _print(args, {"out": str(args.out), "samples": counts}, "\n".join(lines))
+    return 0
+
+
+def _cmd_monitor(args: argparse.Namespace) -> int:
+    from cypilot.core.events import EventHub
+    from cypilot.core.subjects import SubjectMonitor
+
+    async def run() -> tuple[str, list[dict[str, Any]]]:
+        async with _session(args) as session:
+            events = EventHub()
+            monitor = SubjectMonitor(session.node, events)
+            batches: list[dict[str, Any]] = []
+            try:
+                async with events.listen() as queue:
+                    subscription = monitor.subscribe(args.subject, args.type)
+                    deadline = asyncio.get_running_loop().time() + args.duration
+                    while (remaining := deadline - asyncio.get_running_loop().time()) > 0:
+                        try:
+                            event = await asyncio.wait_for(queue.get(), remaining)
+                        except TimeoutError:
+                            break
+                        if event["kind"] == "subject":
+                            batches.append(event)
+            finally:
+                monitor.close()
+            return str(subscription["type"]), batches
+
+    data_type, batches = asyncio.run(run())
+    count = sum(len(batch["t"]) for batch in batches)
+    sources = sorted({source for batch in batches for source in batch["source"] if source is not None})
+    last = batches[-1]["last"] if batches else None
+    result = {"subject": args.subject, "type": data_type, "messages": count, "sources": sources, "last": last}
+    text = f"{args.subject}:{data_type}: {count} messages from {sources or 'no node'}"
+    if last is not None:
+        text += f"\nlast: {json.dumps(last)}"
+    _print(args, result, text)
+    return 0 if count else 1
+
+
+def _cmd_scope(args: argparse.Namespace) -> int:
+    async def run() -> dict[str, Any] | Capture:
+        async with _session(args) as session:
+            await session.wait_for_node(args.node)
+            scope = ScopeClient(session)
+            try:
+                if not args.channels:
+                    return await scope.info(args.node)
+                request = CaptureRequest(
+                    channels=args.channels,
+                    sample_period_us=args.period,
+                    num_samples=args.samples,
+                    pretrigger_samples=args.pretrigger,
+                    trigger_mode=args.trigger,
+                    trigger_source=args.source,
+                    trigger_level=args.level,
+                    hysteresis_band=args.band,
+                    timeout_s=args.timeout,
+                )
+                return await scope.capture(args.node, request)
+            finally:
+                scope.close()
+
+    result = asyncio.run(run())
+    if isinstance(result, dict):
+        lines = [f"{v['id']:3} {v['name']} [{v['unit']}]" for v in result["variables"]]
+        buffer = result["buffer"]
+        lines.append(
+            f"buffer {buffer['buffer_bytes']} bytes, up to {buffer['max_channels']} channels, "
+            f"tick {buffer['tick_period_us']:g} us"
+        )
+        _print(args, result, "\n".join(lines))
+        return 0
+    if args.out is not None:
+        import csv
+
+        with args.out.open("w", newline="") as stream:
+            writer = csv.writer(stream)
+            writer.writerow(["time", *(f"var{channel}" for channel in args.channels)])
+            for index, stamp in enumerate(result.t):
+                writer.writerow([f"{stamp:.9f}", *(repr(values[index]) for values in result.channels)])
+    summary = {
+        "node_id": result.node_id,
+        "sample_period_us": result.sample_period_us,
+        "samples": len(result.t),
+        "pretrigger_samples": result.pretrigger_samples,
+        "out": str(args.out) if args.out else None,
+    }
+    text = f"{len(result.t)} samples at {result.sample_period_us:g} us" + (
+        f", written to {args.out}" if args.out else ""
+    )
+    _print(args, summary, text)
     return 0
 
 

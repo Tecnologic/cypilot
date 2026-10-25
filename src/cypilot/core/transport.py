@@ -24,7 +24,7 @@ import sys
 from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     import pycyphal.transport
@@ -166,21 +166,45 @@ def _open(spec: InterfaceSpec, local_node_id: int | None) -> pycyphal.transport.
 
     if local_node_id is not None and not 0 <= local_node_id <= 127:
         raise InterfaceError(f"invalid CAN node-ID {local_node_id}")
-    media: object
+    media: Any
     if spec.kind == "socketcan":
         from pycyphal.transport.can.media.socketcan import SocketCANMedia
 
         media = SocketCANMedia(spec.channel, spec.mtu)
     else:
-        from pycyphal.transport.can.media.pythoncan import PythonCANMedia
-
         if spec.kind == "canable":
             from cypilot.core import canable
 
             canable.register()
         bitrate: int | tuple[int, int] = spec.bitrate if spec.is_fd else spec.bitrate[0]
-        media = PythonCANMedia(spec.text, bitrate, spec.mtu)
+        media = _unfiltered_media()(spec.text, bitrate, spec.mtu)
     return CANTransport(media, local_node_id=local_node_id)
+
+
+def _unfiltered_media() -> Any:
+    """pycyphal's python-can media without acceptance filters.
+
+    pycyphal sets new filters for every new subscriber and service client.
+    python-can's ``ThreadSafeBus.set_filters`` takes the lock that the reader
+    thread holds in its receive loop and takes again at once, so a filter
+    change can wait for seconds (30 s seen on the virtual bus), and with it
+    every register read or subscription. The CAN transport filters the
+    frames by session in software anyway, and slcan adapters have no hardware
+    filters, so the media keeps accepting all frames.
+    """
+    global _UNFILTERED
+    if _UNFILTERED is None:
+        from pycyphal.transport.can.media.pythoncan import PythonCANMedia
+
+        class UnfilteredPythonCANMedia(PythonCANMedia):
+            def configure_acceptance_filters(self, configuration: Any) -> None:
+                del configuration  # all frames pass; the transport filters them
+
+        _UNFILTERED = UnfilteredPythonCANMedia
+    return _UNFILTERED
+
+
+_UNFILTERED: Any = None
 
 
 def find_adapters() -> list[Adapter]:

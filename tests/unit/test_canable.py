@@ -3,6 +3,8 @@
 
 from __future__ import annotations
 
+import asyncio
+
 import can
 import pytest
 
@@ -48,10 +50,13 @@ def test_unsupported_rates_are_rejected() -> None:
 
 
 def test_canable_media_and_a_redundant_transport() -> None:
-    transport = make_transport(parse_interface("canable:loop://"), 5)
-    assert transport.protocol_parameters.mtu == 63  # CAN FD: 64 bytes less the tail byte
-    transport.close()
-    redundant = make_transport(parse_interfaces(["virtual:a", "virtual:b"]), 5)
-    assert type(redundant).__name__ == "RedundantTransport"
-    assert len(redundant.inferiors) == 2
-    redundant.close()
+    async def body() -> None:  # the CAN transport needs a running event loop
+        transport = make_transport(parse_interface("canable:loop://"), 5)
+        assert transport.protocol_parameters.mtu == 63  # CAN FD: 64 bytes less the tail byte
+        transport.close()
+        redundant = make_transport(parse_interfaces(["virtual:a", "virtual:b"]), 5)
+        assert type(redundant).__name__ == "RedundantTransport"
+        assert len(redundant.inferiors) == 2
+        redundant.close()
+
+    asyncio.run(body())

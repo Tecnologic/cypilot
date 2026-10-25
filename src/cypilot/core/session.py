@@ -181,11 +181,13 @@ class Session:
     async def wait_port_list(self, node_id: int, timeout: float = 11.0) -> PortList | None:
         """Waits up to ``timeout`` for the port list of a node; None if none came."""
         deadline = time.monotonic() + timeout
-        while (found := self._port_lists.get(node_id)) is None and time.monotonic() < deadline:
-            self._changed.clear()
+        while True:
+            self._changed.clear()  # before the check, so a change during it is not lost
+            found = self._port_lists.get(node_id)
+            if found is not None or time.monotonic() >= deadline:
+                return found
             with contextlib.suppress(TimeoutError):
                 await asyncio.wait_for(self._changed.wait(), deadline - time.monotonic())
-        return found
 
     def add_record_handler(self, handler: Callable[[LogRecord], None]) -> None:
         """Calls ``handler`` (on the bus loop) for every log record of any node."""
@@ -234,25 +236,25 @@ class Session:
         again for the GetInfo answers of the nodes found."""
         await asyncio.sleep(duration)
         deadline = time.monotonic() + duration
-        while time.monotonic() < deadline and any(n.name is None or n.unimoc is None for n in self.nodes()):
-            self._changed.clear()
-            try:
+        while True:
+            self._changed.clear()  # before the check, so a change during it is not lost
+            incomplete = any(n.name is None or n.unimoc is None for n in self.nodes())
+            if not incomplete or time.monotonic() >= deadline:
+                return self.nodes()
+            with contextlib.suppress(TimeoutError):
                 await asyncio.wait_for(self._changed.wait(), deadline - time.monotonic())
-            except TimeoutError:
-                break
-        return self.nodes()
 
     async def wait_for_node(self, node_id: int, timeout: float = 10.0) -> NodeSummary:
         """Waits until the node is online and has answered GetInfo."""
         deadline = time.monotonic() + timeout
         while True:
+            self._changed.clear()  # before the check, so a change during it is not lost
             for summary in self.nodes():
                 if summary.node_id == node_id and summary.name is not None and summary.unimoc is not None:
                     return summary
             remaining = deadline - time.monotonic()
             if remaining <= 0:
                 raise TimeoutError(f"node {node_id} did not show up within {timeout} s")
-            self._changed.clear()
             with contextlib.suppress(TimeoutError):
                 await asyncio.wait_for(self._changed.wait(), remaining)
 
