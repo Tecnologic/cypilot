@@ -8,10 +8,10 @@ cypilot is no safety device. The rules this module keeps:
 - Readiness ``ENGAGED`` is only valid while it is refreshed: the drive
   disengages without it after ``unimoc.control.command_timeout`` (0.5 s). The
   keep-alive here refreshes it every 50 ms for the drives the user engaged.
-- **Watchdog:** the owner (the GUI's UI thread, the CLI's loop) must call
-  :meth:`Controller.feed` at least every :data:`WATCHDOG_TIMEOUT`. If it stops,
-  the keep-alive sends ``SLEEP`` to every engaged drive and stops; a frozen
-  window cannot keep a drive engaged.
+- **Watchdog:** the owner (the web app's control lease, the CLI's loop) must
+  call :meth:`Controller.feed` at least every ``watchdog_timeout``. If it
+  stops, the keep-alive sends ``SLEEP`` to every engaged drive and stops; a
+  lost browser cannot keep a drive engaged.
 - :meth:`Controller.stop_all` sends ``SLEEP`` on every readiness subject it
   knows and zero setpoints at once, without a ramp.
 - It does not publish on a readiness subject another node publishes on (the

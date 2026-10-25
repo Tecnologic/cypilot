@@ -1,13 +1,15 @@
 # cypilot Agent Notes
 
-cypilot is the operator GUI (`cypilot`) and CLI (`cypilot-ctl`) for
-[UNIMOC](https://github.com/Tecnologic/unimoc) drives and other Cyphal nodes,
-in Python on pycyphal. The plan, the decisions and the phases are in
-[docs/plan.md](docs/plan.md); read it before larger changes.
+cypilot is the operator web app (`cypilot`, `cypilot-ctl serve`) and CLI
+(`cypilot-ctl`) for [UNIMOC](https://github.com/Tecnologic/unimoc) drives and
+other Cyphal nodes, in Python on pycyphal. The plan, the decisions and the
+phases are in [docs/plan.md](docs/plan.md) and, for the web app that replaced
+its Qt GUI, [docs/web_plan.md](docs/web_plan.md); read them before larger
+changes.
 
 ## Layout
 
-- `src/cypilot/core/`: the bus side, shared by the CLI and the GUI: transport
+- `src/cypilot/core/`: the bus side, shared by the CLI and the web app: transport
   from interface text (`transport.py`), the session with discovery
   (`session.py`), registers (`registers.py`), the heartbeat status
   (`status.py`), capabilities and ports from discovery (`capabilities.py`),
@@ -19,7 +21,7 @@ in Python on pycyphal. The plan, the decisions and the phases are in
   publications with a lease (`subjects.py`), cymon captures (`scope.py`),
   the bus hub of the web server with the control lease (`hub.py`), the
   UNIMOC register description file (`descriptions.py`).
-  **No Qt import in `core/`.**
+  **No web or UI import in `core/`.**
 - `src/cypilot/demo.py`: simulated device (registers, telemetry, readiness,
   cymon services) for tests on a python-can virtual bus without the UNIMOC
   simulation (`tests/unit/demo_bus.py`).
@@ -27,15 +29,13 @@ in Python on pycyphal. The plan, the decisions and the phases are in
   release (`DEFAULT_UNIMOC_REF`) or a local checkout (`CYPILOT_UNIMOC`).
 - `src/cypilot/simulation.py`: fetches and runs the UNIMOC `native_sim` drive.
 - `src/cypilot/cli.py`: `cypilot-ctl`; `cypilot-ctl serve` runs the web server.
-- `src/cypilot/web/`: the FastAPI app (`app.py`: REST, WebSocket, PIN login,
-  the static UI in `static/`) on the hub; plan in
-  [docs/web_plan.md](docs/web_plan.md). Tests: `tests/unit/test_web.py`.
-- `src/cypilot/ui/`: the Qt GUI `cypilot`. `bus.py` runs the core on its own
-  asyncio thread and hands results to the UI through Qt signals (no `await`
-  on the UI thread); `models.py`, `panels.py`, `control_panel.py`,
-  `simulation_panel.py`, `plot_panel.py`, `main_window.py`, `connect_dialog.py`, `app.py`. GUI tests use the `qapp` fixture
-  (offscreen) and `tests/qt_support.py`.
-- `tests/unit/`: no bus. `tests/sim/`: against the released simulation (Linux).
+- `src/cypilot/web/`: the FastAPI app (`app.py`: REST, WebSocket, PIN login)
+  on the hub, and the static UI in `static/` (`index.html`, `app.js`,
+  `app.css`; Alpine.js and uPlot vendored in `static/vendor/`, no build step).
+  Tests: `tests/unit/test_web.py` (API), `tests/browser/` (Playwright with the
+  `browser` fixture and `tests/web_support.py`).
+- `tests/unit/`: no bus. `tests/browser/`: the web UI against demo devices.
+  `tests/sim/`: against the released simulation (Linux).
 
 ## Rules
 
@@ -46,13 +46,14 @@ in Python on pycyphal. The plan, the decisions and the phases are in
 - **No DSDL copy in the repository.** The UNIMOC DSDL is GPL-3.0-or-later; it
   is downloaded at run time (`cypilot.dsdl`). Do not commit generated code.
 - **Safety:** cypilot is no safety device. It never engages a drive by itself,
-  stops publishing readiness when its UI stalls, and keeps a "stop all" always
-  reachable (`docs/plan.md`, section 7).
+  puts the drives to sleep when the operator's control lease lapses, and keeps
+  "stop all" and the E-stop open to every client (`docs/web_plan.md`,
+  section 5).
 - **Platforms:** Linux and Windows. The simulation runs on Linux only; on
   Windows the simulation and cypilot run together in WSL2. Do not add a bridge
   from Windows to a simulation.
-- **Threads:** all Cyphal I/O on one asyncio loop (the bus thread in the GUI);
-  the UI only sends commands and receives snapshots.
+- **Threads:** all Cyphal I/O on one asyncio loop (uvicorn's in the web app);
+  the browser only uses the API and receives events.
 - Changes to the bus contract (vendor status bits, readiness subjects,
   register description file) belong to UNIMOC first; cypilot follows a UNIMOC
   release. Bump `DEFAULT_UNIMOC_REF` with the matching tests.

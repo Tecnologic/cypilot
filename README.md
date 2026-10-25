@@ -1,28 +1,27 @@
 # cypilot
 
-Operator GUI and CLI for [UNIMOC](https://github.com/Tecnologic/unimoc) drives
+Operator web app and CLI for [UNIMOC](https://github.com/Tecnologic/unimoc) drives
 and other Cyphal nodes. Where [cymon](https://github.com/Tecnologic/cymon) is
 the debug tool for any register, subject and service by hand, cypilot does the
 everyday jobs on one to many nodes: find the nodes and show their state, scan,
 edit, compare and store their settings, enable and stop drives, recover from an
 emergency stop or a trip, plot across nodes and take triggered scope shots.
 
-> **Status: pre-alpha.** The core and the CLI `cypilot-ctl` (nodes, registers,
-> commands, capabilities, settings profiles) work against the UNIMOC
-> simulation. The GUI `cypilot` shows the nodes with their state, edits their
-> registers, enables and stops drives, recovers them, plots the subjects of
-> several nodes on one time axis, records and replays them, and shows their
-> log; the scope follows.
-> The plan is [docs/plan.md](docs/plan.md).
+> **Status: pre-alpha.** The core, the CLI `cypilot-ctl` and the web app
+> `cypilot` work against the UNIMOC simulation: nodes with their state,
+> registers with units and help, settings profiles (CLI), enabling, setpoints,
+> stops and recovery, plots of several nodes on one time axis, cymon scope
+> captures, the simulation controls and the log. Recorded runs follow
+> ([docs/web_plan.md](docs/web_plan.md), W4). The plan is
+> [docs/plan.md](docs/plan.md); the web app replaced its Qt GUI.
 
 ## Install
 
 Python 3.11 or newer, Linux or Windows.
 
 ```sh
-pip install -e .            # from a clone; adds cypilot-ctl to the path
-pip install -e '.[gui]'     # plus the GUI cypilot (PySide6, pyqtgraph)
-pip install -e '.[dev]'     # plus the GUI, pytest, ruff and mypy
+pip install -e .            # from a clone; adds cypilot and cypilot-ctl to the path
+pip install -e '.[dev]'     # plus pytest, Playwright, ruff and mypy
 ```
 
 The DSDL is not part of this repository. On the first use cypilot downloads
@@ -112,70 +111,64 @@ The state column shows `disabled`, `enabled`, `engaged`, `blocked`
 (external enable missing), `tripped`, `fault`, `E-stop latched`, `settings
 pending` and `local control`, decoded from the heartbeat of UNIMOC nodes.
 
-## Web server
+## Web app
 
 ```sh
-cypilot-ctl -i socketcan:can0 serve                # http://localhost:8765/, API docs at /docs
-cypilot-ctl serve --demo 2                         # two demo devices, no hardware
+cypilot                                            # http://localhost:8765/ in the browser
+cypilot --demo 2                                   # two demo devices, no hardware
+cypilot-ctl -i socketcan:can0 serve                # the server alone; API docs at /docs
 cypilot-ctl -i canable:/dev/ttyACM0 serve --host 0.0.0.0  # for phones and tablets; prints a PIN
 ```
 
-The REST and WebSocket API (`/api/...`, `/ws`) serves the web UI and
-scripts alike. Reading, plots, captures, **stop all** and **E-stop** are open
-to every client. Enabling, setpoints, register writes, commands and
-publications need the **control lease** of one operator
-(`POST /api/control/take`). The operator's WebSocket renews the lease every
-100 ms. When the renewals stop for `--lease` seconds (0.5 s by default), or
-when the WebSocket closes, cypilot puts the engaged drives to sleep. The web UI
-itself follows in W3 ([docs/web_plan.md](docs/web_plan.md)).
+One page for the laptop, the tablet and the phone (there the views move to a
+bottom bar):
 
-## GUI
+- **Bus:** interfaces (several form a redundant bus), adapter search, bit
+  rates, MTU, plug-and-play allocator, demo devices.
+- **Nodes:** a card per node with name, health, mode, uptime, version and the
+  state chips (`disabled`, `enabled`, `engaged`, `tripped`, `E-stop latched`,
+  `settings pending`, `local control`, ...).
+- **Registers:** scanned from the node, grouped by prefix, with unit, limits,
+  when a write takes effect and the help text from the UNIMOC register
+  description file (`CYPILOT_REGISTERS`, else the file of the pinned release).
+  Write in the register's type, read back, store, restart, export as JSON.
+- **Control:** enable, disable and recover the drive, setpoints in the modes
+  the drive subscribes (d/q current, torque, speed, position) with a ramp.
+  Enabling publishes `ENGAGED` on the drive's readiness subject (UNIMOC
+  v0.2.0 and later: 1024 + node-ID) 20 times a second; a drive is never
+  enabled without a click.
+- **Plots:** the published subjects of any nodes on one time axis, a window,
+  pause, CSV export; commands, stops and register writes are markers.
+- **Scope:** cymon captures with trigger and pre-trigger, CSV export.
+- **Simulation:** the virtual clock of a simulated drive (pause, run, advance,
+  reset) and its plant inputs (`unimoc.sim.*`).
+- **Monitor:** any subject with any type, and publications with a lease.
+- **Log:** the `uavcan.diagnostic.Record` messages of all nodes.
 
-```sh
-cypilot                                           # the Connect dialog lists SocketCAN links and serial ports
-cypilot -i slcan:/dev/pts/1                       # connect at once
-```
-
-The window lists the nodes of the bus with name, version, health, mode,
-uptime and their state (the same state chips as `cypilot-ctl nodes`). Select a
-node to scan its registers into a tree; filter by name, double-click a value
-to edit it in the register's type. A value the node refuses turns red and
-the node's own value stays; **Store** saves the settings in flash. The **Log**
-tab collects the `uavcan.diagnostic.Record` messages of all nodes. All bus
-work runs in its own thread, so the window stays responsive on a busy bus.
-
-The **Control** tab enables, disables and recovers the selected drive and sends
-its setpoints (the modes the drive subscribes: d/q current, torque, speed,
-position) with a ramp. Enabling publishes `ENGAGED` on the drive's own
-readiness subject (UNIMOC v0.2.0: 1024 + node-ID) 20 times a second; a drive is
-never enabled without a click. Setpoint subjects are shared by default, so a
-setpoint reaches every engaged drive on the same subject.
-
-The **Simulation** tab, for a simulated UNIMOC drive, shows the virtual clock
-and pauses, runs, advances (a number of control cycles of a paused
-simulation) and resets it (plant at standstill, virtual time 0). Its plant
-inputs (shaft mode, imposed speed, load torque, DC-link voltage, external
-enable, ...) come from the drive's `unimoc.sim.*` registers. The drive's
-readiness and setpoint timeouts run in real time, also while paused.
+The REST and WebSocket API (`/api/...`, `/ws`) serves the UI and scripts
+alike.
 
 ### Safety
 
 cypilot is no safety device; the hard-wired E-stop loop and the brakes are.
 Within that:
 
-- **STOP ALL (Esc)** works anywhere in the window: `SLEEP` to every drive and
-  zero setpoints at once, no ramp.
-- **Emergency stop (Shift+Esc)**, after a confirmation, sends
-  `EMERGENCY_STOP` to every UNIMOC node; it stays latched until a restart.
-- **Watchdog:** the UI thread confirms every 100 ms that it is alive. After
-  0.3 s without it the bus thread sends `SLEEP` to the engaged drives and stops
-  refreshing their readiness. Closing the window, disconnecting or losing the
-  adapter ends the refresh too; the drive disengages by its own timeout.
+- **One operator:** enabling, setpoints, register writes, commands and
+  publications need the **control lease** (Take control). The operator's page
+  renews it every 100 ms over its WebSocket. When the renewals stop for
+  `--lease` seconds (0.5 s by default), or the page closes, cypilot puts the
+  engaged drives to sleep. Disconnecting or losing the adapter ends the
+  readiness too; the drive disengages by its own timeout.
+- **STOP ALL (Esc)** works for every client, also without control: `SLEEP` to
+  every drive, zero setpoints and the end of all publications, at once.
+- **E-STOP (Shift+Esc)** sends `EMERGENCY_STOP` to every UNIMOC node; it stays
+  latched until a restart.
+- **Login:** beyond this computer (`--host 0.0.0.0`) the app needs a PIN.
 - Enabling is refused, with the reason, while an E-stop or trip is latched,
   the external enable is missing, the drive is under local control (e-bike), or
   another node (a VDC) publishes on the drive's readiness subject.
 - **Recover** acknowledges a latched trip with `STANDBY`, or restarts a drive
-  whose emergency stop is latched (after a confirmation).
+  whose emergency stop is latched (allow the restart first).
 
 ## Against the simulation
 
@@ -188,12 +181,15 @@ cypilot-ctl -i slcan:/dev/pts/N nodes
 ## Tests
 
 ```sh
-pytest                     # unit tests, and the simulation tests on Linux
-pytest tests/unit          # no simulation
+pytest                     # unit and browser tests, and the simulation tests on Linux
+pytest tests/unit          # no simulation, no browser
 ```
 
 The simulation tests use `CYPILOT_SIM_EXE` or download the `native_sim`
-binary of the pinned UNIMOC release (checked against its `SHA256SUMS`).
+binary of the pinned UNIMOC release (checked against its `SHA256SUMS`). The
+browser tests need Chromium for Playwright (`python -m playwright install
+chromium`, or `CYPILOT_CHROMIUM` pointing at a Chromium binary); without it they
+skip.
 
 ## License
 

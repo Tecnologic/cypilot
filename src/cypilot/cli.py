@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-"""``cypilot-ctl``: the jobs of cypilot from the shell, on the same core as the GUI."""
+"""``cypilot-ctl``: the jobs of cypilot from the shell, on the same core as the web app."""
 
 from __future__ import annotations
 
@@ -85,6 +85,14 @@ def main(argv: Sequence[str] | None = None) -> int:
         return 2
     except KeyboardInterrupt:
         return 130
+
+
+def app_main(argv: Sequence[str] | None = None) -> int:
+    """``cypilot``: the web server on this computer, opened in the browser (``cypilot-ctl serve --open``).
+
+    It takes the options of ``serve``; the interface comes from ``$CYPILOT_IFACE`` or the bus view.
+    """
+    return main(["serve", "--open", *(sys.argv[1:] if argv is None else argv)])
 
 
 def _parser() -> argparse.ArgumentParser:

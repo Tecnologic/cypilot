@@ -2,7 +2,7 @@
 """One connection to a Cyphal bus: the local pycyphal node and the discovery of the others.
 
 All methods are coroutines of one asyncio loop. The CLI runs that loop directly;
-the GUI will run it in its bus thread.
+the web server runs it in uvicorn's loop.
 """
 
 from __future__ import annotations

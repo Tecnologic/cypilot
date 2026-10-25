@@ -114,6 +114,8 @@ def test_plots_show_the_telemetry(page: Any) -> None:
     page.wait_for_function("() => /[1-9][0-9]* messages/.test(document.body.innerText)")
     legend = page.inner_text("#plot-main .u-legend")
     assert "10/telemetry value[0]" in legend and "10/telemetry value[1]" in legend
+    page.click("#stop-all")  # commands become markers on the time axis
+    page.wait_for_function("() => markers.some(m => m.text === 'STOP ALL' && m.at > plotEnd - 10)")
 
 
 def test_the_phone_layout_keeps_the_stops_on_screen(browser: Any, server: WebServer) -> None:

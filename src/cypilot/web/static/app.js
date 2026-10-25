@@ -36,9 +36,33 @@ async function api(method, path, body) {
   return data;
 }
 
-// uPlot instances and sample buffers stay outside Alpine's reactivity.
+// uPlot instances, sample buffers and plot markers stay outside Alpine's reactivity.
 const plots = {};
 const buffers = {};
+const markers = [];  // {at, text}: wall-clock seconds, as the subject timestamps
+const MAX_MARKERS = 200;
+let plotEnd = 0;  // the wall-clock time of x = 0 in the plot
+
+function drawMarkers(u) {
+  const ctx = u.ctx;
+  const [x0, x1] = [u.scales.x.min, u.scales.x.max];
+  ctx.save();
+  ctx.strokeStyle = 'rgba(224, 122, 0, .8)';
+  ctx.fillStyle = 'rgba(224, 122, 0, 1)';
+  ctx.font = `${11 * devicePixelRatio}px system-ui, sans-serif`;
+  ctx.lineWidth = devicePixelRatio;
+  for (const m of markers) {
+    const x = m.at - plotEnd;
+    if (x < x0 || x > x1) continue;
+    const px = Math.round(u.valToPos(x, 'x', true));
+    ctx.beginPath();
+    ctx.moveTo(px, u.bbox.top);
+    ctx.lineTo(px, u.bbox.top + u.bbox.height);
+    ctx.stroke();
+    ctx.fillText(m.text, px + 3 * devicePixelRatio, u.bbox.top + 12 * devicePixelRatio);
+  }
+  ctx.restore();
+}
 
 function makePlot(el, labels, height) {
   const width = Math.max(280, el.clientWidth || 800);
@@ -48,6 +72,7 @@ function makePlot(el, labels, height) {
     series: [{ label: 't [s]' }, ...labels.map((l, i) => ({ label: l, stroke: COLORS[i % COLORS.length], width: 1.5, spanGaps: true, points: { show: false } }))],
     axes: [0, 1].map(() => ({ stroke: '#888', grid: { stroke: 'rgba(128,128,128,.2)' }, ticks: { stroke: 'rgba(128,128,128,.3)' } })),
     legend: { live: true },
+    hooks: { draw: [drawMarkers] },
   };
   el.innerHTML = '';
   return new uPlot(opts, [[], ...labels.map(() => [])], el);
@@ -188,7 +213,18 @@ window.cypilot = function () {
       }
     },
 
+    mark(e) {
+      const text = {
+        control: () => `control ${e.reason}`, stop: () => 'STOP ALL', estop: () => 'E-STOP',
+        register: () => `${e.node_id} ${e.name}`, command: () => `${e.node_id} command ${e.command}`,
+      }[e.kind];
+      if (!text || e.at === undefined) return;
+      markers.push({ at: e.at, text: text() });
+      if (markers.length > MAX_MARKERS) markers.splice(0, markers.length - MAX_MARKERS);
+    },
+
     onEvent(e) {
+      this.mark(e);
       switch (e.kind) {
         case 'hello': this.setStatus(e.status); break;
         case 'status': this.setStatus(e.status); break;
@@ -473,7 +509,7 @@ window.cypilot = function () {
       this.rebuildPlot();
     },
     dropAllChannels() {
-      this.subscriptions = []; this.channels = [];
+      this.subscriptions = []; this.channels = []; markers.length = 0;
       for (const k of Object.keys(buffers)) delete buffers[k];
       if (plots.main) { plots.main.destroy(); delete plots.main; }
     },
@@ -530,6 +566,7 @@ window.cypilot = function () {
       const data = tables.length === 1 ? tables[0] : uPlot.join(tables);
       const t = data[0];
       const end = t.length ? t[t.length - 1] : 0;
+      plotEnd = end;
       let start = 0;
       while (start < t.length && t[start] < end - this.windowSeconds) start++;
       return { order, data: data.map(column => Array.from(column).slice(start)).map((col, i) => (i === 0 ? col.map(x => x - end) : col)) };
