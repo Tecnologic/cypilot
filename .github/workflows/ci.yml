@@ -48,3 +48,6 @@ jobs:
           key: cypilot-${{ runner.os }}-py${{ matrix.python }}-${{ hashFiles('src/cypilot/dsdl.py') }}
       # On Windows the simulation tests skip themselves (native_sim is Linux only).
       - run: pytest -v
+
+  build:
+    uses: ./.github/workflows/build.yml

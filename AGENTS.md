@@ -41,6 +41,12 @@ changes.
 - `scripts/pi-setup.sh`: the Raspberry Pi on the cart ([docs/pi.md](docs/pi.md));
   `tests/unit/test_pi_setup.py` runs its dry run. `scripts/load_test.py`: the
   load test of the web app.
+- `packaging/`: the PyInstaller spec of the executable (no Qt, no DSDL; it
+  downloads the DSDL on the first start) and the smoke test of the
+  executable and the wheel; `.github/workflows/build.yml` builds both
+  (called by CI and by `release.yml` on a tag `vX.Y.Z`).
+- `src/cypilot/__main__.py`: `python -m cypilot` and the executable (the web
+  app without arguments, else `cypilot-ctl`).
 - `tests/unit/`: no bus. `tests/browser/`: the web UI against demo devices.
   `tests/sim/`: against the released simulation (Linux).
 

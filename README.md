@@ -16,12 +16,28 @@ emergency stop or a trip, plot across nodes and take triggered scope shots.
 
 ## Install
 
-Python 3.11 or newer, Linux or Windows.
+Four ways, Linux or Windows:
 
-```sh
-pip install -e .            # from a clone; adds cypilot and cypilot-ctl to the path
-pip install -e '.[dev]'     # plus pytest, Playwright, ruff and mypy
-```
+- **Executable**, no Python needed: `cypilot-<version>-windows-x86_64.exe` or
+  `cypilot-<version>-linux-x86_64` from the
+  [releases](https://github.com/Tecnologic/cypilot/releases). Started without
+  arguments it opens the web app in the browser; with arguments it is
+  `cypilot-ctl` (`cypilot.exe nodes -i canable:COM5`, `cypilot.exe serve ...`).
+- **pipx** (Python 3.11 or newer): `pipx install cypilot-<version>-py3-none-any.whl`
+  from the releases, or `pipx install git+https://github.com/Tecnologic/cypilot`;
+  puts `cypilot` and `cypilot-ctl` on the path.
+- **Raspberry Pi on the cart:** `sudo scripts/pi-setup.sh`
+  ([docs/pi.md](docs/pi.md)).
+- **From a clone**, to work on it:
+
+  ```sh
+  pip install -e .            # cypilot and cypilot-ctl on the path
+  pip install -e '.[dev]'     # plus pytest, Playwright, ruff and mypy
+  ```
+
+A release is a tag `vX.Y.Z` equal to the version in `pyproject.toml` and
+`src/cypilot/__init__.py`. The Release workflow builds the executables and the
+wheel, smoke-tests them, and attaches them to the GitHub release.
 
 The DSDL is not part of this repository. On the first use cypilot downloads
 the namespaces of the UNIMOC release it is pinned to (`uavcan`, `reg`,
