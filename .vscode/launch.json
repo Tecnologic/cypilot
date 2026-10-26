@@ -1,0 +1,83 @@
+{
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "cypilot serve (demo, 2 devices)",
+            "type": "debugpy",
+            "request": "launch",
+            "module": "cypilot.cli",
+            "args": ["serve", "--demo", "2", "--open"],
+            "envFile": "${workspaceFolder}/.env",
+            "console": "integratedTerminal",
+            "justMyCode": false
+        },
+        {
+            "name": "cypilot serve (interface from $CYPILOT_IFACE)",
+            "type": "debugpy",
+            "request": "launch",
+            "module": "cypilot.cli",
+            "args": ["serve", "--open"],
+            "envFile": "${workspaceFolder}/.env",
+            "env": { "CYPILOT_IFACE": "${input:iface}" },
+            "console": "integratedTerminal",
+            "justMyCode": false
+        },
+        {
+            "name": "cypilot-ctl (prompt for arguments)",
+            "type": "debugpy",
+            "request": "launch",
+            "module": "cypilot.cli",
+            "args": "${input:ctlArgs}",
+            "envFile": "${workspaceFolder}/.env",
+            "console": "integratedTerminal"
+        },
+        {
+            "name": "pytest: current file",
+            "type": "debugpy",
+            "request": "launch",
+            "module": "pytest",
+            "args": ["${file}", "-x", "-s"],
+            "console": "integratedTerminal",
+            "justMyCode": false
+        },
+        {
+            "name": "pytest: unit tests",
+            "type": "debugpy",
+            "request": "launch",
+            "module": "pytest",
+            "args": ["tests/unit", "-x"],
+            "console": "integratedTerminal",
+            "justMyCode": false
+        },
+        {
+            "name": "pytest: browser tests (headed)",
+            "type": "debugpy",
+            "request": "launch",
+            "module": "pytest",
+            "args": ["tests/browser", "-x", "-s"],
+            "env": { "PWDEBUG": "0" },
+            "console": "integratedTerminal",
+            "justMyCode": false
+        },
+        {
+            "name": "Attach to process",
+            "type": "debugpy",
+            "request": "attach",
+            "connect": { "host": "127.0.0.1", "port": 5678 }
+        }
+    ],
+    "inputs": [
+        {
+            "id": "iface",
+            "type": "promptString",
+            "description": "Interface text (socketcan:vcan0, canable:/dev/ttyACM0, udp:127.0.0.1, ...)",
+            "default": "socketcan:vcan0"
+        },
+        {
+            "id": "ctlArgs",
+            "type": "promptString",
+            "description": "cypilot-ctl arguments, e.g. -i socketcan:vcan0 nodes",
+            "default": "adapters"
+        }
+    ]
+}

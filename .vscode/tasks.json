@@ -1,0 +1,48 @@
+{
+    "version": "2.0.0",
+    "tasks": [
+        {
+            "label": "setup: venv + dev install",
+            "type": "shell",
+            "command": "python3 -m venv .venv && .venv/bin/pip install -e '.[dev]' && .venv/bin/playwright install chromium",
+            "problemMatcher": []
+        },
+        {
+            "label": "ruff check",
+            "type": "shell",
+            "command": "${workspaceFolder}/.venv/bin/ruff check .",
+            "problemMatcher": []
+        },
+        {
+            "label": "ruff format check",
+            "type": "shell",
+            "command": "${workspaceFolder}/.venv/bin/ruff format --check .",
+            "problemMatcher": []
+        },
+        {
+            "label": "mypy",
+            "type": "shell",
+            "command": "${workspaceFolder}/.venv/bin/mypy",
+            "problemMatcher": []
+        },
+        {
+            "label": "pytest",
+            "type": "shell",
+            "command": "${workspaceFolder}/.venv/bin/pytest",
+            "problemMatcher": []
+        },
+        {
+            "label": "check before a commit",
+            "dependsOn": ["ruff check", "ruff format check", "mypy", "pytest"],
+            "dependsOrder": "sequence",
+            "group": { "kind": "test", "isDefault": true },
+            "problemMatcher": []
+        },
+        {
+            "label": "vcan0 up (SocketCAN, needs sudo)",
+            "type": "shell",
+            "command": "sudo modprobe vcan && (ip link show vcan0 >/dev/null 2>&1 || sudo ip link add dev vcan0 type vcan) && sudo ip link set vcan0 mtu 72 && sudo ip link set up vcan0",
+            "problemMatcher": []
+        }
+    ]
+}
