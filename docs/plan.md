@@ -382,6 +382,19 @@ aborts the run on Ctrl+C, the end of the input or an error (there is no lease:
 a killed process leaves the run to the E-stop). `cypilot-ctl stop` aborts it
 like stop all.
 
+### 7.8 Motor identification (planned)
+
+The motor parameters (R, L_d, L_q, flux, pole-pair check, Hall offset,
+inertia and friction, the derived loop gains) get a second assisted flow
+after the startup aid, planned in UNIMOC (`docs/motor_identification_plan.md`
+there, section 6): a "Motor identification" card on the registers
+`unimoc.identify.*` with the same safety rules as the startup aid (lease,
+stop all, E-stop, abort open to all), a confirmation before the first
+rotation, the results reviewed against the present settings before Apply
+and Store, and the result saved as the profile of the motor type for the
+other drives. `cypilot-ctl identify` is the same at the terminal. cypilot
+follows the UNIMOC release that brings the registers.
+
 ## 8. Signals, plots, scope
 
 ### 8.1 Live plots
