@@ -259,6 +259,43 @@
       </div>
     </template>
   </section>
+  <section class="card" id="startup" x-show="startup.state">
+    <h2>Startup aid</h2>
+    <p class="hint">Hardware bring-up of a new board: phase 1 without the motor, then phase 2 with it. The drive applies the
+      calibration at DONE; store it with the Store command. The aid owns the outputs while it runs: STOP ALL, E-STOP and a
+      lost control lease abort it.</p>
+    <template x-if="startup.state">
+      <div>
+        <p><strong id="startup-step" x-text="startup.state.step_name"></strong>
+          <span class="chip" :class="startup.state.running ? 'warn' : ''" x-text="startup.state.running ? 'running' : 'not running'"></span></p>
+        <p id="startup-prompt" x-text="startup.state.prompt"></p>
+        <div class="form" x-show="startup.state.running && startup.state.needs">
+          <label x-show="startup.state.needs === 'vdc'">DC-link voltage (multimeter) [V]
+            <input id="startup-vdc" type="number" min="0" step="any" x-model="startup.vdc" :placeholder="startup.state.ext_vdc || ''"></label>
+          <label x-show="startup.state.needs === 'current'">Phase-A current (clamp meter) [A]
+            <input id="startup-current" type="number" min="0" step="any" x-model="startup.current" :placeholder="startup.state.ext_current || ''"></label>
+        </div>
+        <div class="row">
+          <button id="startup-start" @click="startupAction('start')" :disabled="!isOperator() || startup.state.running || engaged()">Start</button>
+          <button id="startup-next" class="primary" @click="startupAction('next')" :disabled="!isOperator() || !startup.state.running"
+                  x-text="startup.state.phase_2_next ? 'Motor connected: continue' : 'Next step'"></button>
+          <button id="startup-abort" @click="startupAction('abort')" :disabled="!startup.state.running">Abort</button>
+        </div>
+        <p class="hint" x-show="!isOperator()">Take control to run the startup aid. Abort works for everybody.</p>
+        <p class="hint">The drive logs each measurement (Log view); a step continues once it has measured.</p>
+        <table class="registers small">
+          <template x-for="[name, ok] in startupSteps()" :key="name">
+            <tr><td class="mono" x-text="name"></td><td x-text="ok ? 'passed' : (name === startup.state.step_name ? '…' : '')"></td></tr>
+          </template>
+        </table>
+        <template x-if="Object.keys(startup.state.calibration ?? {}).length">
+          <dl class="info small" id="startup-calibration">
+            <template x-for="(v, k) in startup.state.calibration" :key="k"><dt x-text="k"></dt><dd x-text="v.toPrecision(5)"></dd></template>
+          </dl>
+        </template>
+      </div>
+    </template>
+  </section>
 </main>
 
 <!-- ───────────── Plots ───────────── -->

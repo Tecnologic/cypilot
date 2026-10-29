@@ -34,6 +34,7 @@ DRIVE = [
     *port("pub", "telemetry", 212, "unimoc.drive.Telemetry.0.1"),
     *CYMON,
     Register("unimoc.motor.pole_pairs", RegisterValue("natural8", [15]), True, True),
+    Register("unimoc.startup.run", RegisterValue("natural8", [0]), True, False),
 ]
 
 
@@ -64,6 +65,7 @@ def test_capabilities_of_a_drive() -> None:
         Capability.SETPOINTS,
         Capability.SCOPE,
         Capability.LOCAL_CONTROL,
+        Capability.STARTUP,
     }
     assert [p.name for p in setpoint_ports(DRIVE, 10)] == ["current_setpoint", "torque_setpoint"]
 

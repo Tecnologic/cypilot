@@ -13,7 +13,10 @@ the operator. Only the operator enables drives, sends setpoints, writes
 registers and runs commands that change a node; any client may stop. The
 operator renews its lease over its WebSocket; the renewals feed the
 controller's watchdog, so a phone that loses Wi-Fi, sleeps or closes the tab
-puts the engaged drives to sleep within the lease time.
+puts the engaged drives to sleep within the lease time. A startup aid the
+operator runs (``cypilot.core.startup``) owns the outputs without readiness,
+so it is aborted instead: when the lease lapses, is released or its client
+leaves, on a disconnect, and on stop all (every UNIMOC drive).
 
 Everything runs on the one asyncio loop of the web server.
 """
@@ -36,6 +39,7 @@ from cypilot.core.recording import RunRecording
 from cypilot.core.runs import RunError, RunStore
 from cypilot.core.scope import ScopeClient
 from cypilot.core.session import DEFAULT_LOCAL_NODE_ID, SEVERITY_NAMES, LogRecord, NodeSummary, Session
+from cypilot.core.startup import abort_running
 from cypilot.core.subjects import PublisherManager, SubjectMonitor
 from cypilot.core.transport import make_transport, parse_interface, parse_interfaces
 
@@ -45,6 +49,8 @@ DEFAULT_LEASE = 0.5
 """Seconds the operator's lease lasts without a renewal (the controller's watchdog)."""
 LEASE_LIMITS = (0.3, 1.0)
 SNAPSHOT_PERIOD = 0.25
+STARTUP_WATCH_PERIOD = 0.1
+"""Seconds between two checks of the lease while a startup aid runs."""
 LOG_LENGTH = 2000
 DEMO_CHANNEL = "virtual:cypilot-demo"
 
@@ -125,6 +131,8 @@ class BusHub:
         self.runs = runs
         self.recording: RunRecording | None = None
         self._capturing: Session | None = None
+        self._startup_runs: set[int] = set()
+        self._startup_watch: asyncio.Task[None] | None = None
 
     # --- Connection ------------------------------------------------------------
 
@@ -181,6 +189,11 @@ class BusHub:
             await self._close()
 
     async def _close(self) -> None:
+        if self._startup_runs:
+            await self.abort_startup("the bus was disconnected", sorted(self._startup_runs))
+        if self._startup_watch is not None:
+            self._startup_watch.cancel()
+            self._startup_watch = None
         if self.recording is not None:
             await self.stop_run("the bus was disconnected")
         if self._snapshots is not None:
@@ -306,6 +319,7 @@ class BusHub:
         """Gives the lease back; the engaged drives are put to sleep first."""
         if self.is_operator(client):
             await self._stop_engaged("control released")
+            await self._abort_startup_runs("control released")
             self._lease = None
             self._emit_control("released")
         return self.control_state()
@@ -329,17 +343,24 @@ class BusHub:
                 _logger.warning("client %s left: stopped %d publication(s)", client, stopped)
         if self._lease is not None and self._lease.client == client:
             await self._stop_engaged("operator disconnected")
+            await self._abort_startup_runs("operator disconnected")
             self._lease = None
             self._emit_control("operator disconnected")
 
     # --- Stops (any client, never locked) -------------------------------------
 
     async def stop_all(self) -> list[int]:
-        """SLEEP on every readiness subject the controller knows at once, then on every other UNIMOC drive."""
+        """SLEEP on every readiness subject the controller knows at once, then on every other UNIMOC drive.
+
+        A running startup aid ignores readiness: it is aborted on every UNIMOC drive.
+        """
         session = self.require_session()
         assert self.controller is not None
         await self.controller.stop_all()
         stopped = set(self.controller.known)
+        stopped.update(
+            await self.abort_startup("stop all", [node.node_id for node in session.nodes() if node.is_unimoc])
+        )
         others: list[DriveTarget] = []
         for node in session.nodes():
             if node.is_unimoc and node.node_id not in stopped:
@@ -365,6 +386,37 @@ class BusHub:
         result = await self.controller.emergency_stop(targets)
         self.events.emit("estop", nodes={str(node_id): status for node_id, status in result.items()})
         return result
+
+    # --- Startup aid ----------------------------------------------------------
+
+    def startup_started(self, node_id: int) -> None:
+        """The operator started the startup aid of a drive: it is aborted when the lease ends."""
+        self._startup_runs.add(node_id)
+        if self._startup_watch is None or self._startup_watch.done():
+            self._startup_watch = asyncio.get_running_loop().create_task(self._watch_startup())
+
+    async def abort_startup(self, reason: str, node_ids: list[int]) -> list[int]:
+        """Aborts the startup aid where it runs on ``node_ids``; the nodes it stopped."""
+        if self.session is None or not node_ids:
+            return []
+        stopped = await abort_running(self.session.node, node_ids)
+        self._startup_runs.difference_update(node_ids)
+        if stopped:
+            _logger.warning("%s: startup aid aborted on %s", reason, stopped)
+            self.events.emit("startup", reason=reason, nodes=stopped)
+        return stopped
+
+    async def _abort_startup_runs(self, reason: str) -> None:
+        if self._startup_runs:
+            await self.abort_startup(reason, sorted(self._startup_runs))
+
+    async def _watch_startup(self) -> None:
+        """Aborts the operator's runs once its lease has lapsed (the controller watches engaged drives)."""
+        while self._startup_runs:
+            await asyncio.sleep(STARTUP_WATCH_PERIOD)
+            if self._current_lease() is None and self._startup_runs:
+                await self._abort_startup_runs("lease lost")
+                self._emit_control("lease lost")
 
     def _on_watchdog(self) -> None:
         """The controller put the drives to sleep: the operator's lease lapsed."""

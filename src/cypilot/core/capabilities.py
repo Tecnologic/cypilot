@@ -16,6 +16,7 @@ from collections.abc import Iterable
 from dataclasses import dataclass
 
 from cypilot.core.registers import Register
+from cypilot.core.startup import has_startup
 from cypilot.core.status import VendorStatus
 
 UNSET_PORT_ID = 65535
@@ -41,6 +42,7 @@ class Capability(enum.Enum):
     CART = "cart drive"
     SCOPE = "scope"
     SIMULATION = "simulation"
+    STARTUP = "startup aid"
     LOCAL_CONTROL = "local control"
     LOG = "log"
 
@@ -121,6 +123,8 @@ def capabilities(
         result.add(Capability.SCOPE)
     if any(r.name.startswith("unimoc.sim.") for r in registers):
         result.add(Capability.SIMULATION)
+    if has_startup(registers):
+        result.add(Capability.STARTUP)
     if unimoc and vendor_code is not None and VendorStatus.decode(vendor_code).local_control:
         result.add(Capability.LOCAL_CONTROL)
     return result

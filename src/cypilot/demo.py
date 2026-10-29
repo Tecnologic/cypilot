@@ -15,7 +15,8 @@ It behaves like a small drive with cymon-lib:
 - for cypilot's control it passes as a UNIMOC drive: the probe register
   ``unimoc.settings.pending`` and the vendor status bits of the heartbeat
   (power stage enabled and engaged while engaged, E-stop latched);
-- ExecuteCommand (restart, store, emergency stop) and diagnostic records.
+- ExecuteCommand (restart, store, emergency stop) and diagnostic records;
+- the registers of UNIMOC's startup aid ``unimoc.startup.*`` (:class:`DemoStartup`).
 
 Import only after :func:`cypilot.dsdl.ensure_dsdl`.
 """
@@ -35,7 +36,7 @@ import reg.udral.service.common
 import uavcan.diagnostic
 import uavcan.node
 import uavcan.primitive.array
-from pycyphal.application.register import Bit, Natural16, Real32, String, Value
+from pycyphal.application.register import Bit, Natural8, Natural16, Real32, String, Value
 
 from cypilot import __version__
 
@@ -170,6 +171,87 @@ class CaptureEngine:
         return [[0.0] * len(self.channels)] * missing + self.pre + self.post
 
 
+class DemoStartup:
+    """UNIMOC's startup aid as the bus sees it, without measurements.
+
+    ``run``, ``step``, the external readings and ``results`` behave like the
+    firmware: a run starts only while not engaged, a step write answers with the
+    step and continues once the step has "measured" (:attr:`measure_time`), the
+    readings gate DC_LINK_VOLTAGE_CHECK and CURRENT_SENSE_CALIBRATION, DONE
+    writes the calibration registers, an abort in a run goes to FAULT.
+    """
+
+    STEPS = 14
+    DONE, FAULT = 12, 13
+    measure_time = 0.1
+
+    def __init__(self, registers: Any, engaged: Any) -> None:
+        self._engaged = engaged
+        self.running = False
+        self.step = 0
+        self.passed = [False] * self.STEPS
+        self.ext_current = 0.0
+        self.ext_vdc = 0.0
+        self.requested = False
+        self.since = 0.0
+        self.calibration = {
+            "adc_offset_a": 0.0,
+            "adc_offset_b": 0.0,
+            "gain_a": 1.0,
+            "gain_b": 1.0,
+            "gain_vdc": 1.0,
+        }
+        prefix = "unimoc.startup."
+        registers[prefix + "run"] = lambda: Value(natural8=Natural8([int(self.running)])), self._set_run
+        registers[prefix + "step"] = lambda: Value(natural8=Natural8([self.step])), self._set_step
+        registers[prefix + "ext_current_A"] = (
+            lambda: Value(real32=Real32([self.ext_current])),
+            self._set_current,
+        )
+        registers[prefix + "ext_vdc_V"] = lambda: Value(real32=Real32([self.ext_vdc])), self._set_vdc
+        registers[prefix + "results"] = lambda: Value(natural8=Natural8([int(p) for p in self.passed]))
+        for name in self.calibration:
+            registers[prefix + name] = lambda name=name: Value(real32=Real32([self.calibration[name]]))
+
+    def _set_run(self, value: Value) -> None:
+        if int(value.natural8.value[0]) == 0:
+            self.abort()
+        elif int(value.natural8.value[0]) == 1 and not self.running and not self._engaged():
+            self.running, self.step, self.passed = True, 1, [False] * self.STEPS
+            self.ext_current = self.ext_vdc = 0.0
+            self._enter(1)
+
+    def _set_step(self, value: Value) -> None:
+        if self.running and int(value.natural8.value[0]) == 1:
+            self.requested = True
+
+    def _set_current(self, value: Value) -> None:
+        self.ext_current = float(value.real32.value[0])
+
+    def _set_vdc(self, value: Value) -> None:
+        self.ext_vdc = float(value.real32.value[0])
+
+    def abort(self) -> None:
+        if self.running:
+            self.running, self.step = False, self.FAULT
+
+    def _enter(self, step: int) -> None:
+        self.step, self.requested, self.since = step, False, time.monotonic()
+
+    def tick(self) -> None:
+        """Continues a requested step once it has measured and its reading is there."""
+        if not self.running or not self.requested or time.monotonic() - self.since < self.measure_time:
+            return
+        if (self.step == 7 and self.ext_vdc < 1.0) or (self.step == 11 and self.ext_current < 1e-3):
+            return  # the firmware logs a warning and waits
+        self.passed[self.step] = True
+        if self.step + 1 >= self.DONE:
+            self.calibration.update(adc_offset_a=0.01, adc_offset_b=-0.01, gain_a=1.02, gain_b=0.98)
+            self.running, self.step = False, self.DONE
+            return
+        self._enter(self.step + 1)
+
+
 class DemoDevice:
     def __init__(
         self,
@@ -205,6 +287,7 @@ class DemoDevice:
         registers["demo.engaged"] = lambda: Value(natural16=Natural16([int(self.engaged)]))
         registers["demo.store_count"] = lambda: Value(natural16=Natural16([self.store_count]))
         registers["unimoc.settings.pending"] = lambda: Value(bit=Bit([False]))
+        self.startup = DemoStartup(registers, lambda: self.engaged)
         for name in ("uavcan.pub.cymon_trigger", "uavcan.sub.cymon_trigger"):
             registers[f"{name}.id"] = Value(natural16=Natural16([trigger_subject]))
             registers[f"{name}.type"] = Value(string=String("cymon.TriggerEvent.0.1"))
@@ -302,6 +385,8 @@ class DemoDevice:
             await asyncio.sleep(0.05)
             if self.engaged and time.monotonic() > self.readiness_deadline:
                 await self._set_engaged(False, "readiness timeout")
+            self.startup.tick()
+            self._update_status()
             # Slow signals: the 20 Hz telemetry would alias the 50 Hz scope signal.
             w = 2 * math.pi * 0.5 * self.t
             values = [self.amplitude * math.sin(w), self.amplitude * math.cos(w), 5.0 * float(self.engaged)]
@@ -309,7 +394,7 @@ class DemoDevice:
 
     def _update_status(self) -> None:
         """The UNIMOC vendor status bits: power stage (0..2), engaged (3), E-stop latched (5)."""
-        code = (0x01 | 0x08) if self.engaged else 0x00
+        code = (0x01 | 0x08) if self.engaged else (0x01 if self.startup.running else 0x00)
         if self.estopped:
             code |= 0x20
         self.node.heartbeat_publisher.vendor_specific_status_code = code
@@ -326,7 +411,7 @@ class DemoDevice:
             )
 
     async def _on_readiness(self, msg: Any, _: pycyphal.transport.TransferFrom) -> None:
-        if msg.value == ENGAGED and not self.estopped:
+        if msg.value == ENGAGED and not self.estopped and not self.startup.running:
             self.readiness_deadline = time.monotonic() + 0.5
             await self._set_engaged(True, "readiness ENGAGED")
         else:
@@ -336,6 +421,7 @@ class DemoDevice:
         Status = uavcan.node.ExecuteCommand_1.Response
         if request.command == 65531:
             self.estopped = True
+            self.startup.abort()
             self._update_status()
             await self._set_engaged(False, "emergency stop")
             return Status(status=Status.STATUS_SUCCESS)

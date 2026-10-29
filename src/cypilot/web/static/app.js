@@ -137,6 +137,7 @@ window.cypilot = function () {
       busy: false, state: '', result: null,
     },
     sim: { status: null, error: '', cycles: 16000 },
+    startup: { state: null, error: '', vdc: '', current: '' },
     log: [],
     logLevel: 'info',
     logNode: '',
@@ -153,6 +154,7 @@ window.cypilot = function () {
       });
       setInterval(() => { if (this.wsOpen) this.ws.send(JSON.stringify({ type: 'renew' })); }, RENEW_MS);
       setInterval(() => { if (this.status?.connected && this.view === 'sim' && this.selected !== null) this.loadSim(); }, 1000);
+      setInterval(() => { if (this.status?.connected && this.view === 'control' && this.startup.state?.running) this.loadStartup(); }, 500);
       await this.checkAuth();
     },
 
@@ -282,6 +284,7 @@ window.cypilot = function () {
       if (this.selected === null) return;
       if (this.view === 'registers' && !this.registers.length) this.loadRegisters();
       if (this.view === 'control' && !this.target) this.loadTarget();
+      if (this.view === 'control') this.loadStartup();
       if (this.view === 'plots' && !this.plotSources.length) this.loadSources();
       if (this.view === 'scope' && !Object.keys(this.scope.infos).length) this.loadScope();
       if (this.view === 'sim') { this.loadSim(); if (!this.registers.length) this.loadRegisters(); }
@@ -374,6 +377,7 @@ window.cypilot = function () {
       this.selected = id;
       this.registers = []; this.target = null; this.targetError = ''; this.plotSources = [];
       this.sim.status = null; this.sim.error = '';
+      this.startup = { state: null, error: '', vdc: '', current: '' };
       this.$nextTick(() => this.onView());
     },
     async command(name) {
@@ -477,6 +481,38 @@ window.cypilot = function () {
         await api('POST', `/api/nodes/${this.selected}/setpoint`, { mode: this.setpoint.mode, values, ramp: Number(this.setpoint.ramp) });
       } catch (e) { this.fail(e); }
     },
+    // --- Startup aid (UNIMOC hardware bring-up) --------------------------------------
+
+    async loadStartup() {
+      if (this.selected === null || !this.node()?.unimoc) { this.startup.state = null; return; }
+      const node = this.selected;
+      try {
+        const state = await api('GET', `/api/nodes/${node}/startup`);
+        if (node === this.selected) { this.startup.state = state; this.startup.error = ''; }
+      } catch (e) {
+        if (node === this.selected) { this.startup.state = null; this.startup.error = e.message; }
+      }
+    },
+    async startupAction(action) {
+      const s = this.startup.state;
+      const body = { action };
+      if (action === 'start' && !confirm('Start the hardware startup aid? Phase 1 runs WITHOUT a motor: disconnect it first. The drive releases its outputs.')) return;
+      if (action === 'next' && s?.phase_2_next) {
+        if (!confirm('Phase 2 puts voltage on the motor. Is the motor connected (U, V, W and PE) and the shaft free?')) return;
+        body.motor_connected = true;
+      }
+      if (s?.needs === 'vdc' && this.startup.vdc !== '') body.ext_vdc = Number(this.startup.vdc);
+      if (s?.needs === 'current' && this.startup.current !== '') body.ext_current = Number(this.startup.current);
+      try {
+        this.startup.state = { ...(await api('POST', `/api/nodes/${this.selected}/startup`, body)), calibration: {} };
+        if (action !== 'external') this.startup.vdc = this.startup.current = '';
+      } catch (e) { this.fail(e); }
+      await this.loadStartup();
+    },
+    startupSteps() {
+      return Object.entries(this.startup.state?.passed ?? {}).filter(([name]) => !['DONE', 'FAULT'].includes(name));
+    },
+
     async recover() {
       this.busy = 'recovering ...';
       try {
