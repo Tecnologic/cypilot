@@ -12,6 +12,8 @@ It behaves like a small drive with cymon-lib:
   on subject 1000 at 20 Hz;
 - a readiness subscription (``reg.udral.service.common.Readiness.0.1`` on
   subject 106) that engages only while refreshed within 0.5 s, like UNIMOC;
+- a torque setpoint subscription (``uavcan.si.unit.torque.Scalar.1.0`` on
+  subject 107); the telemetry's i_q follows it while engaged;
 - for cypilot's control it passes as a UNIMOC drive: the probe register
   ``unimoc.settings.pending`` and the vendor status bits of the heartbeat
   (power stage enabled and engaged while engaged, E-stop latched);
@@ -35,6 +37,7 @@ import reg.udral.service.common
 import uavcan.diagnostic
 import uavcan.node
 import uavcan.primitive.array
+import uavcan.si.unit.torque
 from pycyphal.application.register import Bit, Natural16, Real32, String, Value
 
 from cypilot import __version__
@@ -48,6 +51,7 @@ SERVICE_IDS = {
 }
 TELEMETRY_SUBJECT = 1000
 READINESS_SUBJECT = 106
+TORQUE_SUBJECT = 107
 ENGAGED = 3
 
 IDLE, CONFIGURED, ARMED, TRIGGERED, COMPLETE = range(5)
@@ -182,6 +186,7 @@ class DemoDevice:
         env = {f"UAVCAN__SRV__{k.upper()}__ID": str(v) for k, v in SERVICE_IDS.items()}
         env["UAVCAN__PUB__TELEMETRY__ID"] = str(TELEMETRY_SUBJECT)
         env["UAVCAN__SUB__READINESS__ID"] = str(READINESS_SUBJECT)
+        env["UAVCAN__SUB__TORQUE_SETPOINT__ID"] = str(TORQUE_SUBJECT)
         registry = pycyphal.application.make_registry(None, env)
         info = uavcan.node.GetInfo_1.Response(
             protocol_version=uavcan.node.Version_1(1, 0),
@@ -197,6 +202,8 @@ class DemoDevice:
         self.engaged = False
         self.estopped = False
         self.readiness_deadline = 0.0
+        self.torque = 0.0
+        """The last torque setpoint [N m]."""
         self.store_count = 0
         self.t = 0.0
         registers = self.node.registry
@@ -226,6 +233,8 @@ class DemoDevice:
         self._telemetry = self.node.make_publisher(uavcan.primitive.array.Real32_1_0, "telemetry")
         self._readiness = self.node.make_subscriber(reg.udral.service.common.Readiness_0_1, "readiness")
         self._readiness.receive_in_background(self._on_readiness)
+        self._torque = self.node.make_subscriber(uavcan.si.unit.torque.Scalar_1_0, "torque_setpoint")
+        self._torque.receive_in_background(self._on_torque)
         self._log = self.node.make_publisher(uavcan.diagnostic.Record_1)
 
     def _set_amplitude(self, value: Value) -> None:
@@ -304,7 +313,8 @@ class DemoDevice:
                 await self._set_engaged(False, "readiness timeout")
             # Slow signals: the 20 Hz telemetry would alias the 50 Hz scope signal.
             w = 2 * math.pi * 0.5 * self.t
-            values = [self.amplitude * math.sin(w), self.amplitude * math.cos(w), 5.0 * float(self.engaged)]
+            i_q = self.torque if self.engaged else 0.0
+            values = [self.amplitude * math.sin(w), self.amplitude * math.cos(w), i_q]
             await self._telemetry.publish(uavcan.primitive.array.Real32_1_0(values))
 
     def _update_status(self) -> None:
@@ -331,6 +341,9 @@ class DemoDevice:
             await self._set_engaged(True, "readiness ENGAGED")
         else:
             await self._set_engaged(False, "readiness not ENGAGED")
+
+    async def _on_torque(self, msg: Any, _: pycyphal.transport.TransferFrom) -> None:
+        self.torque = float(msg.newton_meter)
 
     async def _on_command(self, request: Any, _: Any) -> Any:
         Status = uavcan.node.ExecuteCommand_1.Response

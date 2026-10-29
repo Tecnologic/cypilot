@@ -126,7 +126,13 @@ def test_enable_lease_lapse_and_stops(dsdl: Path) -> None:
                 response = await client.post(
                     f"/api/nodes/{DEVICE_ID}/setpoint", json=setpoint, headers=OPERATOR
                 )
-                assert response.status_code == 400  # the demo device has no setpoint subscriptions
+                assert response.status_code == 400  # the demo device subscribes only a torque setpoint
+                setpoint = {"mode": "torque", "values": [2.0]}
+                response = await client.post(
+                    f"/api/nodes/{DEVICE_ID}/setpoint", json=setpoint, headers=OPERATOR
+                )
+                assert response.status_code == 200, response.text
+                await wait_for_async(lambda: torque_is(hub, 2.0))
             # The renewals stop: the lease lapses and the drive goes to sleep.
             await wait_for(lambda: hub.control_state() == {"operator": None, "engaged": []}, timeout=3.0)
             await wait_for_async(lambda: not_engaged(client))
@@ -147,6 +153,46 @@ def test_enable_lease_lapse_and_stops(dsdl: Path) -> None:
             await wait_for(lambda: node_vendor(hub) & 0x20 != 0)  # E-stop latched
 
     run(body())
+
+
+def test_step_and_square_wave_setpoints(dsdl: Path) -> None:
+    async def body() -> None:
+        async with web() as (hub, client), renewing(hub, "operator"):
+            await client.post("/api/control/take", headers=OPERATOR)
+            square = {"mode": "torque", "kind": "square", "low": [0.0], "high": [3.0], "period": 0.4}
+            url = f"/api/nodes/{DEVICE_ID}/waveform"
+            assert (await client.post(url, json=square, headers=VIEWER)).status_code == 403
+            response = await client.post(url, json=square, headers=OPERATOR)
+            assert response.status_code == 400 and "not enabled" in response.text
+            await client.post(f"/api/nodes/{DEVICE_ID}/enable", headers=OPERATOR)
+            for wrong, reason in (
+                ({"kind": "sine"}, "unknown waveform"),
+                ({"mode": "speed"}, "speed"),
+                ({"duty": 1.5}, "duty"),
+                ({"low": [0.0, 0.0]}, "same number"),
+            ):
+                response = await client.post(url, json={**square, **wrong}, headers=OPERATOR)
+                assert response.status_code == 400 and reason in response.text, response.text
+
+            response = await client.post(url, json=square, headers=OPERATOR)
+            assert response.status_code == 200, response.text
+            assert response.json()["kind"] == "square"
+            await wait_for_async(lambda: torque_is(hub, 3.0))
+            await wait_for_async(lambda: torque_is(hub, 0.0))
+            await wait_for_async(lambda: torque_is(hub, 3.0))
+
+            step = {"mode": "torque", "kind": "step", "low": [0.0], "high": [1.5], "delay": 0.3}
+            assert (await client.post(url, json=step, headers=OPERATOR)).status_code == 200
+            await wait_for_async(lambda: torque_is(hub, 1.5))
+            await client.post("/api/stop", headers=OPERATOR)
+            await wait_for_async(lambda: not_engaged(client))
+
+    run(body())
+
+
+async def torque_is(hub: BusHub, value: float) -> bool:
+    """Whether the demo device received ``value`` as its last torque setpoint."""
+    return abs(hub._devices[0].torque - value) < 1e-3
 
 
 async def not_engaged(client: httpx.AsyncClient) -> bool:
@@ -303,7 +349,11 @@ def test_the_drive_target(dsdl: Path) -> None:
     async def body() -> None:
         async with web() as (_, client):
             target = (await client.get(f"/api/nodes/{DEVICE_ID}/target")).json()
-            assert target == {"node_id": DEVICE_ID, "readiness": 106, "setpoints": {}}
+            assert target == {
+                "node_id": DEVICE_ID,
+                "readiness": 106,
+                "setpoints": {"torque": {"subject": 107, "components": 1}},
+            }
 
     run(body())
 

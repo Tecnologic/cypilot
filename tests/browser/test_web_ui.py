@@ -3,7 +3,8 @@
 
 from __future__ import annotations
 
-from collections.abc import Iterator
+import time
+from collections.abc import Callable, Iterator
 from pathlib import Path
 from typing import Any
 
@@ -94,6 +95,43 @@ def test_enable_stop_all_and_the_lease_of_a_closed_page(browser: Any, page: Any,
     viewer.wait_for_selector(f"[data-node='{DRIVE}'] .chip.on", state="detached", timeout=5000)
     viewer.wait_for_selector("text=nobody has control")
     viewer.close()
+
+
+def test_a_square_wave_and_a_step_from_the_setpoint_panel(page: Any, server: WebServer) -> None:
+    page.click("text=Take control")
+    view(page, "control")
+    page.click("#enable")
+    page.wait_for_function(
+        f"() => document.querySelector(\"[data-node='{DRIVE}'] .chips\").innerText.includes('engaged')"
+    )
+    page.select_option("#setpoint-mode", "torque")
+    page.select_option("#setpoint-signal", "square")
+    assert not page.locator("#send-setpoint").is_visible()
+    page.locator(".wave-low").first.fill("-1")
+    page.locator(".setpoint-value").first.fill("2")
+    page.fill("#wave-period", "0.4")
+    page.click("#start-waveform")
+    device = server.hub._devices[0]
+    for value in (2.0, -1.0, 2.0):
+        eventually(lambda value=value: device.torque == value)
+
+    page.select_option("#setpoint-signal", "step")
+    assert not page.locator("#wave-period").is_visible()
+    page.locator(".wave-low").first.fill("0")
+    page.locator(".setpoint-value").first.fill("1.5")
+    page.fill("#wave-delay", "0.3")
+    page.click("#start-waveform")
+    eventually(lambda: device.torque == 0.0)
+    eventually(lambda: device.torque == 1.5)
+    page.click("#stop-all")
+    eventually(lambda: device.torque == 0.0)
+
+
+def eventually(condition: Callable[[], bool], timeout: float = 3.0) -> None:
+    deadline = time.monotonic() + timeout
+    while not condition():
+        assert time.monotonic() < deadline, "condition not met in time"
+        time.sleep(0.02)
 
 
 def test_a_viewer_can_stop_and_e_stop(browser: Any, page: Any, server: WebServer) -> None:

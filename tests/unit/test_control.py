@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-"""The controller against a fake session: refusals, keep-alive, watchdog, ramps, stop, recovery."""
+"""The controller against a fake session: refusals, keep-alive, watchdog, ramps, waveforms, stop, recovery."""
 
 from __future__ import annotations
 
@@ -14,7 +14,17 @@ import pytest
 
 from cypilot.core import control
 from cypilot.core.capabilities import PortList
-from cypilot.core.control import ENGAGED, SLEEP, STANDBY, ControlError, Controller, DriveTarget, SetpointMode
+from cypilot.core.control import (
+    ENGAGED,
+    SLEEP,
+    STANDBY,
+    ControlError,
+    Controller,
+    DriveTarget,
+    SetpointMode,
+    Waveform,
+    WaveformKind,
+)
 from cypilot.core.session import NodeSummary
 from cypilot.core.status import Health, Mode
 
@@ -182,6 +192,105 @@ def test_setpoints_ramp_and_disengage_ramps_to_zero_then_standby() -> None:
         count = len(session.readiness())
         await asyncio.sleep(0.2)
         assert len(session.readiness()) == count  # left alone after the STANDBY hold
+        await controller.close()
+
+    run(go())
+
+
+def test_waveform_values_over_time() -> None:
+    step = Waveform(WaveformKind.STEP, (0.0,), (2.0,), delay=0.5)
+    assert step.at(0.4) == ((0.0,), False)
+    assert step.at(0.5) == ((2.0,), True)
+    square = Waveform(WaveformKind.SQUARE, (-1.0,), (1.0,), delay=0.2, period=1.0, duty=0.25, cycles=2)
+    assert [square.at(t)[0][0] for t in (0.1, 0.3, 0.5, 1.3, 1.5, 2.1)] == [-1, 1, -1, 1, -1, -1]
+    assert not square.at(2.1)[1] and square.at(2.2)[1]
+    endless = Waveform(WaveformKind.SQUARE, (0.0,), (1.0,), period=0.2)
+    assert endless.at(1000.05) == ((1.0,), False)
+
+
+@pytest.mark.parametrize(
+    ("arguments", "reason"),
+    [
+        ({"low": (0.0, 0.0)}, "same number"),
+        ({"delay": -1.0}, "delay"),
+        ({"period": 0.01}, "period"),
+        ({"duty": 1.0}, "duty"),
+        ({"cycles": -1}, "cycles"),
+        ({"edge": 0.6}, "edges"),
+    ],
+)
+def test_waveform_is_checked(arguments: dict[str, Any], reason: str) -> None:
+    shape: dict[str, Any] = {"low": (0.0,), "high": (1.0,), "period": 1.0, **arguments}
+    with pytest.raises(ValueError, match=reason):
+        Waveform(WaveformKind.SQUARE, **shape)
+
+
+def test_square_wave_runs_its_cycles_and_ends_low() -> None:
+    async def go() -> None:
+        session = FakeSession([drive()])
+        controller = Controller(session)  # type: ignore[arg-type]
+        square = Waveform(WaveformKind.SQUARE, (0.0, 0.0), (0.0, 3.0), period=0.4, cycles=2)
+        with pytest.raises(ControlError, match="not enabled"):
+            controller.set_waveform(TARGET, SetpointMode.CURRENT, square)
+        await controller.engage(TARGET)
+        controller.set_waveform(TARGET, SetpointMode.CURRENT, square)
+        assert controller.waveform_of(SetpointMode.CURRENT, 107) == square
+        for _ in range(22):  # 1.1 s: two periods of 0.4 s, then low
+            controller.feed()
+            await asyncio.sleep(0.05)
+        i_q = [q for _, q in session.setpoints()]
+        levels = [i_q[0]] + [b for a, b in itertools.pairwise(i_q) if a != b]
+        assert levels == [3.0, 0.0, 3.0, 0.0]  # at once, no edge time
+        assert i_q.count(0.0) > 5  # it stays low after the cycles
+        assert controller.waveform_of(SetpointMode.CURRENT, 107) is None
+        await controller.close()
+
+    run(go())
+
+
+def test_step_with_edges_holds_high_and_a_setpoint_or_a_stop_ends_a_wave() -> None:
+    async def go() -> None:
+        session = FakeSession([drive()])
+        controller = Controller(session)  # type: ignore[arg-type]
+        await controller.engage(TARGET)
+        controller.set_setpoint(TARGET, SetpointMode.CURRENT, (0.0, 1.0))
+        step = Waveform(WaveformKind.STEP, (0.0, 0.0), (0.0, 4.0), delay=0.2, edge=0.2)
+        controller.set_waveform(TARGET, SetpointMode.CURRENT, step)  # ramps from 1 to the low value first
+        for _ in range(14):
+            controller.feed()
+            await asyncio.sleep(0.05)
+        i_q = [q for _, q in session.setpoints()]
+        assert i_q[-1] == pytest.approx(4.0)
+        assert any(0.0 < q < 4.0 for q in i_q[i_q.index(min(i_q)) :])  # the edge is ramped
+        assert controller.waveform_of(SetpointMode.CURRENT, 107) is None  # a step ends on its edge
+
+        endless = Waveform(WaveformKind.SQUARE, (0.0, 0.0), (0.0, 2.0), period=0.2)
+        controller.set_waveform(TARGET, SetpointMode.CURRENT, endless)
+        controller.set_setpoint(TARGET, SetpointMode.CURRENT, (0.0, 1.0))
+        assert controller.waveform_of(SetpointMode.CURRENT, 107) is None
+        controller.set_waveform(TARGET, SetpointMode.CURRENT, endless)
+        await controller.stop_all()
+        assert session.setpoints()[-1] == (0.0, 0.0)
+        assert controller.setpoint_of(SetpointMode.CURRENT, 107) is None
+        await controller.close()
+
+    run(go())
+
+
+def test_the_watchdog_ends_a_square_wave() -> None:
+    async def go() -> None:
+        session = FakeSession([drive()])
+        controller = Controller(session)  # type: ignore[arg-type]
+        await controller.engage(TARGET)
+        controller.set_waveform(
+            TARGET, SetpointMode.CURRENT, Waveform(WaveformKind.SQUARE, (0.0, 0.0), (0.0, 2.0), period=0.2)
+        )
+        await asyncio.sleep(0.6)  # not fed
+        assert controller.watchdog_tripped and controller.engaged == set()
+        count = len(session.setpoints())
+        assert session.setpoints()[-1] == (0.0, 0.0)
+        await asyncio.sleep(0.3)
+        assert len(session.setpoints()) == count  # nothing more is sent
         await controller.close()
 
     run(go())

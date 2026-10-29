@@ -95,6 +95,7 @@ cypilot-ctl command 10 store                      # restart, store, factory-rese
 cypilot-ctl --json regs 10 > drive10.json
 cypilot-ctl caps 10                               # what the node supports, its ports and their types
 cypilot-ctl run 10 --current 0,2 --for 3          # enable, hold i_q = 2 A for 3 s, ramp down, disable
+cypilot-ctl run 10 --current 0,2 --wave square --period 0.5 --for 3   # i_q between 0 and 2 A
 cypilot-ctl stop                                  # SLEEP to every drive and zero setpoints, at once
 cypilot-ctl recover 10                            # STANDBY clears a trip; --restart for a latched E-stop
 cypilot-ctl sim 10 pause                          # simulated drive: status, pause, run, advance N, reset
@@ -148,7 +149,10 @@ bottom bar):
   description file (`CYPILOT_REGISTERS`, else the file of the pinned release).
   Write in the register's type, read back, store, restart, export as JSON.
 - **Control:** enable, disable and recover the drive, setpoints in the modes
-  the drive subscribes (d/q current, torque, speed, position) with a ramp.
+  the drive subscribes (d/q current, torque, speed, position) with a ramp,
+  or as a test signal: a step or a square wave between a low and a high value
+  (delay, period, duty cycle, cycles, edge time), which runs while the drive
+  is enabled and ends on a new setpoint, a disable or a stop.
   Enabling publishes `ENGAGED` on the drive's readiness subject (UNIMOC
   v0.2.0 and later: 1024 + node-ID) 20 times a second; a drive is never
   enabled without a click.

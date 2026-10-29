@@ -20,6 +20,12 @@ cypilot is no safety device. The rules this module keeps:
 Readiness is per drive (UNIMOC v0.2.0: subject 1024 + node-ID by default), so
 one drive is enabled alone. The setpoint subjects are shared by default: a
 setpoint reaches every engaged drive that subscribes its subject.
+
+A setpoint is a constant, or a test signal (:class:`Waveform`): a **step**
+from a low to a high value, or a **square wave** between them for a number of
+periods. The keep-alive generates it, so it runs only while the drive is
+engaged and the owner feeds the watchdog; a new setpoint, a disable or a stop
+ends it.
 """
 
 from __future__ import annotations
@@ -97,6 +103,63 @@ async def find_target(session: Session, node_id: int) -> DriveTarget:
     return DriveTarget(node_id, int(readiness), setpoints)
 
 
+class WaveformKind(enum.Enum):
+    STEP = "step"
+    SQUARE = "square"
+
+
+MAX_WAVEFORM_TIME = 3600.0
+"""Seconds; the longest delay or period of a waveform."""
+
+
+@dataclass(frozen=True)
+class Waveform:
+    """A test signal between two setpoint values, each edge ramped over ``edge`` seconds.
+
+    - **step:** ``low`` for ``delay`` seconds, then ``high``, held.
+    - **square:** ``low`` for ``delay`` seconds, then ``high`` for ``duty`` of
+      each ``period`` and ``low`` for the rest, ``cycles`` times (0: until
+      changed); it ends on ``low``.
+    """
+
+    kind: WaveformKind
+    low: tuple[float, ...]
+    high: tuple[float, ...]
+    delay: float = 0.0
+    period: float = 1.0
+    duty: float = 0.5
+    cycles: int = 0
+    edge: float = 0.0
+
+    def __post_init__(self) -> None:
+        if len(self.low) != len(self.high):
+            raise ValueError("low and high take the same number of values")
+        if not 0.0 <= self.delay <= MAX_WAVEFORM_TIME:
+            raise ValueError(f"the delay is 0 to {MAX_WAVEFORM_TIME:g} s")
+        if not 0.0 <= self.edge <= MAX_WAVEFORM_TIME:
+            raise ValueError(f"the edge time is 0 to {MAX_WAVEFORM_TIME:g} s")
+        if self.kind is WaveformKind.SQUARE:
+            if not 2 * KEEPALIVE_PERIOD <= self.period <= MAX_WAVEFORM_TIME:
+                raise ValueError(f"the period is {2 * KEEPALIVE_PERIOD:g} to {MAX_WAVEFORM_TIME:g} s")
+            if not 0.0 < self.duty < 1.0:
+                raise ValueError("the duty cycle is between 0 and 1")
+            if self.cycles < 0:
+                raise ValueError("the number of cycles is 0 (until changed) or more")
+            if self.edge > min(self.duty, 1.0 - self.duty) * self.period:
+                raise ValueError("the edges take longer than the high or the low part of a period")
+
+    def at(self, elapsed: float) -> tuple[tuple[float, ...], bool]:
+        """The value ``elapsed`` seconds after the start, and whether the waveform has ended."""
+        if elapsed < self.delay:
+            return self.low, False
+        if self.kind is WaveformKind.STEP:
+            return self.high, True
+        cycle, phase = divmod(elapsed - self.delay, self.period)
+        if self.cycles and cycle >= self.cycles:
+            return self.low, True
+        return (self.high if phase < self.duty * self.period else self.low), False
+
+
 @dataclass
 class _Setpoint:
     mode: SetpointMode
@@ -104,6 +167,8 @@ class _Setpoint:
     target: tuple[float, ...]
     value: tuple[float, ...]
     ramp: float  # seconds from the present value to the target; 0: at once
+    waveform: Waveform | None = None
+    started: float = 0.0  # clock of the waveform's start
 
 
 class Controller:
@@ -219,6 +284,7 @@ class Controller:
                 s for (mode, subject), s in self._setpoints.items() if target.setpoints.get(mode) == subject
             ]
             for setpoint in mine:
+                setpoint.waveform = None
                 self._retarget(setpoint, tuple(0.0 for _ in setpoint.target), ramp)
             await asyncio.sleep(ramp)
             # The keep-alive may not have reached zero within the ramp time (timer
@@ -246,6 +312,7 @@ class Controller:
         self._engaged.clear()
         self._standby.clear()
         for setpoint in self._setpoints.values():
+            setpoint.waveform = None
             setpoint.value = setpoint.target = tuple(0.0 for _ in setpoint.target)
         for _ in range(STOP_REPEATS):
             for target in targets.values():
@@ -280,8 +347,33 @@ class Controller:
     def set_setpoint(
         self, target: DriveTarget, mode: SetpointMode, values: Sequence[float], ramp: float = 0.0
     ) -> None:
-        """Sends a setpoint while the drive is engaged; ``ramp`` seconds from the present value."""
-        if len(values) != mode.components:
+        """Sends a setpoint while the drive is engaged; ``ramp`` seconds from the present value.
+
+        It ends a waveform running on the same subject."""
+        present = self._present(target, mode, len(values))
+        present.waveform = None
+        self._retarget(present, tuple(float(v) for v in values), ramp)
+
+    def set_waveform(self, target: DriveTarget, mode: SetpointMode, waveform: Waveform) -> None:
+        """Starts a step or a square wave while the drive is engaged; it replaces the present setpoint.
+
+        The first value (``low``) is reached over ``waveform.edge`` seconds from the present value."""
+        present = self._present(target, mode, len(waveform.low))
+        present.waveform = waveform
+        present.started = self._clock()
+        self._retarget(present, tuple(float(v) for v in waveform.low), waveform.edge)
+
+    def setpoint_of(self, mode: SetpointMode, subject: int) -> tuple[float, ...] | None:
+        present = self._setpoints.get((mode, subject))
+        return present.value if present else None
+
+    def waveform_of(self, mode: SetpointMode, subject: int) -> Waveform | None:
+        """The waveform running on a setpoint subject, or None."""
+        present = self._setpoints.get((mode, subject))
+        return present.waveform if present else None
+
+    def _present(self, target: DriveTarget, mode: SetpointMode, components: int) -> _Setpoint:
+        if components != mode.components:
             raise ValueError(f"{mode.name.lower()} takes {mode.components} value(s)")
         subject = target.setpoints.get(mode)
         if subject is None:
@@ -291,19 +383,26 @@ class Controller:
         key = (mode, subject)
         present = self._setpoints.get(key)
         if present is None:
-            present = _Setpoint(mode, subject, tuple(0.0 for _ in values), tuple(0.0 for _ in values), 0.0)
+            zero = tuple(0.0 for _ in range(components))
+            present = _Setpoint(mode, subject, zero, zero, 0.0)
             self._setpoints[key] = present
-        self._retarget(present, tuple(float(v) for v in values), ramp)
-
-    def setpoint_of(self, mode: SetpointMode, subject: int) -> tuple[float, ...] | None:
-        present = self._setpoints.get((mode, subject))
-        return present.value if present else None
+        return present
 
     def _retarget(self, setpoint: _Setpoint, target: tuple[float, ...], ramp: float) -> None:
         setpoint.target = target
         setpoint.ramp = max(0.0, ramp)
         if setpoint.ramp == 0.0:
             setpoint.value = target
+
+    def _follow(self, setpoint: _Setpoint, now: float) -> None:
+        """Moves the target of a setpoint along its waveform; an edge starts a ramp of ``edge`` seconds."""
+        waveform = setpoint.waveform
+        assert waveform is not None
+        value, ended = waveform.at(now - setpoint.started)
+        if value != setpoint.target:
+            self._retarget(setpoint, value, waveform.edge)
+        if ended:
+            setpoint.waveform = None
 
     def _drop_unused_setpoints(self) -> None:
         used = {(mode, subject) for t in self._engaged.values() for mode, subject in t.setpoints.items()}
@@ -325,6 +424,8 @@ class Controller:
                     self._on_watchdog()
                 continue
             for setpoint in self._setpoints.values():
+                if setpoint.waveform is not None:
+                    self._follow(setpoint, now)
                 _ramp(setpoint, step)
             for target in self._engaged.values():
                 await self._publish_readiness(target.readiness, ENGAGED)

@@ -324,6 +324,13 @@ limits from the node's registers (`unimoc.motor.limits.i_max`, the speed range),
 a ramp, and a step or a square wave of chosen amplitude and period for
 tuning. The setpoint goes to zero on disable and on stop.
 
+Done 2026-10-29: `core.control.Waveform`. A step holds the low value for a
+delay, then the high value; a square wave alternates them for a number of
+periods (0: until changed) with a duty cycle and ramped edges, and ends low.
+The keep-alive generates it at 20 Hz, so it stops with the watchdog; a new
+setpoint, a disable or a stop ends it. The demo device subscribes a torque
+setpoint (subject 107) for the tests.
+
 Cart: a "cart" panel publishes `unimoc.cart.WheelCommand` with one torque per
 wheel (or one for all) and `unimoc.cart.PedalState` for limp-home tests, only
 while no VDC or pedal unit is on the bus.
@@ -492,7 +499,7 @@ CI.
 | G0 | cypilot | **Done 2026-10-24:** repository, license, DSDL download, package skeleton, transport factory, `cypilot-ctl nodes`, `regs`, `get`, `set`, `command`, CI against the released `native_sim` | The CLI lists the simulated drive and its registers in CI |
 | G1 | cypilot | **Done 2026-10-24:** discovery, capabilities and ports (`cypilot-ctl caps`), status model, register scan, edit, store, profiles with save, diff and load (`cypilot-ctl profile`) | Profile copy between two simulated drives in a test |
 | G2 | cypilot | **Done 2026-10-24 (offscreen tested; manual check on Linux, WSL2 and Windows open):** Qt main window: connection dialog, node table with status chips, register editor, log view | Offscreen smoke test; manual check on Linux, WSL2 and Windows |
-| G3 | cypilot | **Done 2026-10-24:** control: readiness per node, keep-alive and UI watchdog, enable, disable, stop all, E-stop, setpoint panel, recovery procedures (`core.control`, the Control tab, `cypilot-ctl run/stop/recover`), simulation panel (`core.sim_control`, the Simulation tab, `cypilot-ctl sim`); open: step and square-wave setpoints | Engage, trip, recover and E-stop flows pass against the simulation |
+| G3 | cypilot | **Done 2026-10-24:** control: readiness per node, keep-alive and UI watchdog, enable, disable, stop all, E-stop, setpoint panel, recovery procedures (`core.control`, the Control tab, `cypilot-ctl run/stop/recover`), simulation panel (`core.sim_control`, the Simulation tab, `cypilot-ctl sim`); step and square-wave setpoints done 2026-10-29 (`core.control.Waveform`, the setpoint panel, `cypilot-ctl run --wave`) | Engage, trip, recover and E-stop flows pass against the simulation |
 | F2 | unimoc | Register description file (generator, check, release asset), `scripts/sim_cluster.sh`, multi-node simulation | Asset in a release; four drives on `vcan0` |
 | G4 | cypilot | **In part 2026-10-24:** live plots across nodes, recorder with markers, CSV/JSON export and replay (`core.signals`, the Plot tab, `cypilot-ctl record`); open: own Y axes and cursor, register snapshot in the export, raising `unimoc.telemetry.rate` for a session, description file in the editor (F2) | Plot of four nodes from the cluster |
 | C1 | cymon | Capture client as an importable API, released | GUI pins it |

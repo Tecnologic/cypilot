@@ -247,15 +247,35 @@
                 <option :value="mode" x-text="`${mode} (subject ${sp.subject})`" :selected="mode === setpoint.mode"></option>
               </template>
             </select></label>
-          <label>Ramp [s] <input type="number" min="0" step="0.1" x-model="setpoint.ramp"></label>
+          <label>Signal
+            <select id="setpoint-signal" x-model="wave.kind">
+              <option value="constant">constant</option>
+              <option value="step">step</option>
+              <option value="square">square wave</option>
+            </select></label>
+          <label x-show="wave.kind === 'constant'">Ramp [s] <input type="number" min="0" step="0.1" x-model="setpoint.ramp"></label>
+          <template x-for="(label, i) in componentLabels()" :key="'low ' + label">
+            <label x-show="wave.kind !== 'constant'"><span x-text="'low ' + label"></span><input type="number" step="any" class="wave-low" x-model="wave.low[i]"></label>
+          </template>
           <template x-for="(label, i) in componentLabels()" :key="label">
-            <label><span x-text="label"></span><input type="number" step="any" class="setpoint-value" x-model="setpoint.values[i]"></label>
+            <label><span x-text="(wave.kind === 'constant' ? '' : 'high ') + label"></span><input type="number" step="any" class="setpoint-value" x-model="setpoint.values[i]"></label>
+          </template>
+          <template x-if="wave.kind !== 'constant'">
+            <div class="form wide-field">
+              <label>Delay [s] <input id="wave-delay" type="number" min="0" step="0.1" x-model="wave.delay"></label>
+              <label>Edge [s] <input id="wave-edge" type="number" min="0" step="0.01" x-model="wave.edge"></label>
+              <label x-show="wave.kind === 'square'">Period [s] <input id="wave-period" type="number" min="0.1" step="0.1" x-model="wave.period"></label>
+              <label x-show="wave.kind === 'square'">Duty <input id="wave-duty" type="number" min="0.05" max="0.95" step="0.05" x-model="wave.duty"></label>
+              <label x-show="wave.kind === 'square'">Cycles (0: until changed) <input id="wave-cycles" type="number" min="0" step="1" x-model="wave.cycles"></label>
+            </div>
           </template>
         </div>
         <div class="row">
-          <button id="send-setpoint" class="primary" @click="sendSetpoint()" :disabled="!isOperator() || !engaged()">Send</button>
+          <button id="send-setpoint" class="primary" x-show="wave.kind === 'constant'" @click="sendSetpoint()" :disabled="!isOperator() || !engaged()">Send</button>
+          <button id="start-waveform" class="primary" x-show="wave.kind !== 'constant'" @click="startWaveform()" :disabled="!isOperator() || !engaged()">Start</button>
           <button @click="sendSetpoint(true)" :disabled="!isOperator() || !engaged()">Zero</button>
         </div>
+        <p class="hint" x-show="wave.kind !== 'constant'">The signal runs while the drive is enabled; Send, Zero, Disable or Stop all end it.</p>
       </div>
     </template>
   </section>

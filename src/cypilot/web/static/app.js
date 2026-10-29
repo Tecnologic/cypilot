@@ -121,6 +121,7 @@ window.cypilot = function () {
     target: null,
     targetError: '',
     setpoint: { mode: '', values: [0, 0], ramp: 0.5 },
+    wave: { kind: 'constant', low: [0, 0], delay: 0, period: 1, duty: 0.5, cycles: 0, edge: 0 },
     allowRestart: false,
     plotSources: [],
     plotSourceKey: '',
@@ -475,6 +476,17 @@ window.cypilot = function () {
       if (zero) this.setpoint.values = this.setpoint.values.map(() => 0);
       try {
         await api('POST', `/api/nodes/${this.selected}/setpoint`, { mode: this.setpoint.mode, values, ramp: Number(this.setpoint.ramp) });
+      } catch (e) { this.fail(e); }
+    },
+    async startWaveform() {
+      const n = this.components();
+      const w = this.wave;
+      try {
+        await api('POST', `/api/nodes/${this.selected}/waveform`, {
+          mode: this.setpoint.mode, kind: w.kind,
+          low: w.low.slice(0, n).map(Number), high: this.setpoint.values.slice(0, n).map(Number),
+          delay: Number(w.delay), period: Number(w.period), duty: Number(w.duty), cycles: Number(w.cycles), edge: Number(w.edge),
+        });
       } catch (e) { this.fail(e); }
     },
     async recover() {

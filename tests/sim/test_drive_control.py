@@ -4,10 +4,13 @@
 from __future__ import annotations
 
 import asyncio
+import itertools
 from pathlib import Path
 
-from cypilot.core.control import Controller, SetpointMode, find_target
+from cypilot.core.control import Controller, SetpointMode, Waveform, WaveformKind, find_target
+from cypilot.core.registers import RegisterClient
 from cypilot.core.session import Session
+from cypilot.core.signals import Recorder, sources, subscribe
 from cypilot.core.status import Chip
 from cypilot.core.transport import parse_interface
 from cypilot.simulation import SimInstance
@@ -57,6 +60,41 @@ def test_engage_setpoint_and_the_watchdog_disengages_a_drive_whose_owner_stalls(
     asyncio.run(go())
 
 
+def test_a_square_wave_of_the_current_reaches_the_control_cycle(sim: SimInstance, dsdl: Path) -> None:
+    async def go() -> None:
+        async with Session(parse_interface(sim.slcan_interfaces[0])) as session:
+            await session.wait_for_node(DRIVE)
+            client = RegisterClient(session.node, DRIVE, timeout=1.0)
+            try:
+                registers = await client.scan(["uavcan.pub.telemetry.id", "uavcan.pub.telemetry.type"])
+            finally:
+                client.close()
+            (telemetry,) = sources(registers, DRIVE)
+            recorder = Recorder()
+            subscriber = subscribe(session.node, telemetry, recorder)
+            target = await find_target(session, DRIVE)
+            controller = Controller(session)
+            feeding = asyncio.get_running_loop().create_task(_feed(controller))
+            await controller.engage(target)
+            await controller.wait_engaged(DRIVE)
+            square = Waveform(WaveformKind.SQUARE, (0.0, 0.0), (0.0, 1.5), period=0.8, cycles=2)
+            controller.set_waveform(target, SetpointMode.CURRENT, square)
+            await asyncio.sleep(2.0)
+            subject = target.setpoints[SetpointMode.CURRENT]
+            assert controller.waveform_of(SetpointMode.CURRENT, subject) is None
+            assert await _engaged(session)
+            _, i_q_ref = recorder.series(telemetry.key, "i_q_ref")
+            levels = [round(value, 1) for value in i_q_ref if round(value, 1) in (0.0, 1.5)]
+            changes = [b for a, b in itertools.pairwise(levels) if a != b]
+            assert changes[:4] == [1.5, 0.0, 1.5, 0.0], i_q_ref
+            assert levels[-1] == 0.0
+            subscriber.close()
+            feeding.cancel()
+            await controller.close()
+
+    asyncio.run(go())
+
+
 def test_a_trip_refuses_the_engage_and_the_recovery_clears_it(ctl: Ctl) -> None:
     assert ctl.run("set", str(DRIVE), "unimoc.sim.dc_link_voltage", "59")[0] == 0  # trips at 58 V
     ctl.wait_for(lambda nodes: any("tripped" in n["state"] for n in nodes))
@@ -68,6 +106,14 @@ def test_a_trip_refuses_the_engage_and_the_recovery_clears_it(ctl: Ctl) -> None:
     assert "STANDBY sent (acknowledges the trip)" in result["steps"]
     run = ctl.json("run", str(DRIVE), "--current", "0,1", "--for", "1")
     assert run["state"] == ["disabled"]
+
+
+def test_run_with_a_square_wave_from_the_command_line(ctl: Ctl) -> None:
+    args = ["--current", "0,1", "--wave", "square", "--low", "0,-1", "--period", "0.4", "--edge", "0.05"]
+    run = ctl.json("run", str(DRIVE), *args, "--for", "1")
+    assert run["state"] == ["disabled"]
+    code, _ = ctl.run("run", str(DRIVE), "--wave", "step", "--for", "1")
+    assert code != 0  # a waveform needs a setpoint as its high value
 
 
 def test_stop_reaches_every_drive(ctl: Ctl) -> None:

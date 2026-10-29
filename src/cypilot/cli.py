@@ -26,6 +26,8 @@ from cypilot.core.control import (
     Controller,
     DriveTarget,
     SetpointMode,
+    Waveform,
+    WaveformKind,
     find_target,
     recover,
 )
@@ -192,6 +194,14 @@ def _parser() -> argparse.ArgumentParser:
     setpoint.add_argument("--speed", type=_floats(1), metavar="RAD_S", help="mechanical speed [rad/s]")
     run.add_argument("--for", dest="duration", type=float, default=2.0, help="seconds to hold (default 2)")
     run.add_argument("--ramp", type=float, default=0.5, help="seconds to ramp up and down (default 0.5)")
+    wave = run.add_argument_group("test signal", "a step or a square wave from --low to the setpoint above")
+    wave.add_argument("--wave", choices=[k.value for k in WaveformKind], help="instead of a constant")
+    wave.add_argument("--low", type=_float_list, help="low value(s), comma-separated (default 0)")
+    wave.add_argument("--delay", type=float, default=0.0, help="seconds at the low value first (default 0)")
+    wave.add_argument("--period", type=float, default=1.0, help="square wave period [s] (default 1)")
+    wave.add_argument("--duty", type=float, default=0.5, help="square wave high fraction (default 0.5)")
+    wave.add_argument("--cycles", type=int, default=0, help="square wave periods, 0: until --for ends")
+    wave.add_argument("--edge", type=float, default=0.0, help="seconds per edge (default 0: at once)")
     run.set_defaults(handler=_cmd_run)
 
     stop = commands.add_parser("stop", help="SLEEP to every drive on the bus and zero setpoints, at once")
@@ -287,6 +297,10 @@ def _floats(count: int) -> Any:
         return values
 
     return parse
+
+
+def _float_list(text: str) -> tuple[float, ...]:
+    return tuple(float(item) for item in text.split(","))
 
 
 def _bitrate(text: str) -> tuple[int, int]:
@@ -566,6 +580,22 @@ def _cmd_run(args: argparse.Namespace) -> int:
         )
         if values is not None
     ]
+    shapes: dict[SetpointMode, Waveform] = {}
+    if args.wave is not None:
+        if not chosen:
+            raise ValueError("--wave needs a setpoint (--current, --torque or --speed) as its high value")
+        for mode, high in chosen:
+            low = args.low if args.low is not None else tuple(0.0 for _ in high)
+            shapes[mode] = Waveform(
+                WaveformKind(args.wave),
+                low,
+                high,
+                delay=args.delay,
+                period=args.period,
+                duty=args.duty,
+                cycles=args.cycles,
+                edge=args.edge,
+            )
 
     async def run() -> dict[str, Any]:
         async with _session(args) as session:
@@ -577,7 +607,10 @@ def _cmd_run(args: argparse.Namespace) -> int:
                 await controller.engage(target)
                 await controller.wait_engaged(args.node)
                 for mode, values in chosen:
-                    controller.set_setpoint(target, mode, values, ramp=args.ramp)
+                    if mode in shapes:
+                        controller.set_waveform(target, mode, shapes[mode])
+                    else:
+                        controller.set_setpoint(target, mode, values, ramp=args.ramp)
                 await asyncio.sleep(args.duration)
                 await controller.disengage(args.node, ramp=args.ramp)
                 await asyncio.sleep(STANDBY_HOLD)

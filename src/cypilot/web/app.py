@@ -34,7 +34,14 @@ from pydantic import BaseModel, Field
 from starlette.websockets import WebSocketDisconnect
 
 from cypilot import __version__
-from cypilot.core.control import ControlError, SetpointMode, find_target, recover
+from cypilot.core.control import (
+    ControlError,
+    SetpointMode,
+    Waveform,
+    WaveformKind,
+    find_target,
+    recover,
+)
 from cypilot.core.hub import BusConfig, BusHub, NotConnected, NotOperator
 from cypilot.core.registers import Register, RegisterError, RegisterValue, parse_like
 from cypilot.core.runs import RunError, replay_json
@@ -104,6 +111,22 @@ class SetpointRequest(BaseModel):
     """``current``, ``torque``, ``speed`` or ``position``."""
     values: list[float]
     ramp: float = Field(0.0, ge=0.0, le=60.0)
+
+
+class WaveformRequest(BaseModel):
+    """A step or a square wave between ``low`` and ``high`` (``cypilot.core.control.Waveform``)."""
+
+    mode: str
+    """``current``, ``torque``, ``speed`` or ``position``."""
+    kind: str
+    """``step`` or ``square``."""
+    low: list[float]
+    high: list[float]
+    delay: float = 0.0
+    period: float = 1.0
+    duty: float = 0.5
+    cycles: int = 0
+    edge: float = 0.0
 
 
 class RecoverRequest(BaseModel):
@@ -484,6 +507,32 @@ def create_app(hub: BusHub, *, pin: str | None = None, wifi: Wifi | None = None)
         target = controller.known.get(node_id) or await find_target(hub.require_session(), node_id)
         controller.set_setpoint(target, mode, body.values, ramp=body.ramp)
         return {"node_id": node_id, "mode": mode.name.lower(), "values": body.values}
+
+    @api.post("/nodes/{node_id}/waveform")
+    async def waveform(node_id: int, body: WaveformRequest, request: Request) -> dict[str, Any]:
+        """Starts a step or a square wave on a setpoint; a setpoint, a disable or a stop ends it."""
+        controller = hub.require_operator(client_of(request))
+        try:
+            mode = SetpointMode[body.mode.upper()]
+        except KeyError:
+            raise HTTPException(400, f"unknown setpoint mode {body.mode!r}") from None
+        try:
+            kind = WaveformKind(body.kind.lower())
+        except ValueError:
+            raise HTTPException(400, f"unknown waveform {body.kind!r}") from None
+        shape = Waveform(
+            kind,
+            tuple(body.low),
+            tuple(body.high),
+            delay=body.delay,
+            period=body.period,
+            duty=body.duty,
+            cycles=body.cycles,
+            edge=body.edge,
+        )
+        target = controller.known.get(node_id) or await find_target(hub.require_session(), node_id)
+        controller.set_waveform(target, mode, shape)
+        return {"node_id": node_id, "mode": mode.name.lower(), **body.model_dump(exclude={"mode"})}
 
     @api.post("/nodes/{node_id}/recover")
     async def recover_node(
