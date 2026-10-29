@@ -387,11 +387,14 @@ like stop all.
 The motor parameters (R, L_d, L_q, flux, pole-pair check, Hall offset,
 inertia and friction, the derived loop gains) get a second assisted flow
 after the startup aid, planned in UNIMOC (`docs/motor_identification_plan.md`
-there, section 6): a "Motor identification" card on the registers
-`unimoc.identify.*` with the same safety rules as the startup aid (lease,
+there, sections 5.4 and 6): a "Motor identification" card that sends the
+actions as ExecuteCommand (with the refusal reasons), follows progress and
+completion on the drive's status message `unimoc.drive.CommissioningStatus`
+instead of polling, and reviews the result registers `unimoc.identify.result.*`;
+the same safety rules as the startup aid (lease,
 stop all, E-stop, abort open to all), a confirmation before the first
-rotation, the results reviewed against the present settings before Apply
-and Store, and the result saved as the profile of the motor type for the
+rotation, the pole pairs measured or entered and checked, the results
+reviewed, compared and approved by the operator before Apply and Store, and the result saved as the profile of the motor type for the
 other drives. `cypilot-ctl identify` is the same at the terminal. cypilot
 follows the UNIMOC release that brings the registers.
 
