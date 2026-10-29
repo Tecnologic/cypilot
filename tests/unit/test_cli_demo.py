@@ -98,3 +98,59 @@ def test_scope_lists_the_variables_and_captures_to_csv(
 def test_scope_of_a_missing_node_fails(channel: str, capsys: pytest.CaptureFixture[str]) -> None:
     code, _ = ctl(capsys, "-i", channel, "scope", "99")
     assert code == 2
+
+
+def scripted(monkeypatch: pytest.MonkeyPatch, answers: list[str]) -> list[str]:
+    """Answers ``cypilot-ctl startup run`` in order; the end of the list is the end of the input."""
+    asked: list[str] = []
+
+    async def ask(prompt: str) -> str:
+        asked.append(prompt)
+        if not answers:
+            raise EOFError("end of the input")
+        return answers.pop(0)
+
+    monkeypatch.setattr(cli, "_ask", ask)
+    return asked
+
+
+def test_startup_run_walks_the_steps_to_done(
+    channel: str, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Disconnected; six steps; the DC link and its step; the gate step; phase 2; the clamp meter.
+    asked = scripted(monkeypatch, ["yes", *[""] * 6, "48", "", "", "yes", "", "0.85", ""])
+    code, out = ctl(capsys, "-i", channel, "--json", "startup", str(DEVICE_ID), "run")
+    result = json.loads(out)
+    assert code == 0, out
+    assert result["step_name"] == "DONE" and result["calibration"]["gain_a"] == pytest.approx(1.02)
+    assert any("multimeter" in prompt for prompt in asked) and any(
+        "clamp meter" in prompt for prompt in asked
+    )
+    assert any("Phase 2 puts voltage" in prompt for prompt in asked)
+
+
+def test_startup_run_aborts_at_the_end_of_the_input_and_without_the_motor_confirmation(
+    channel: str, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    scripted(monkeypatch, ["yes", ""])  # one step, then the input ends (as Ctrl+C)
+    code, _ = ctl(capsys, "-i", channel, "startup", str(DEVICE_ID), "run")
+    assert code == 2
+    code, out = ctl(capsys, "-i", channel, "--json", "startup", str(DEVICE_ID))
+    assert code == 0 and json.loads(out)["step_name"] == "FAULT"
+
+    scripted(monkeypatch, ["no"])  # the motor is still connected: not started
+    code, _ = ctl(capsys, "-i", channel, "startup", str(DEVICE_ID), "run")
+    assert code == 2
+
+    scripted(monkeypatch, ["yes", *[""] * 6, "48", "", "", "no"])  # phase 2 not confirmed
+    code, _ = ctl(capsys, "-i", channel, "startup", str(DEVICE_ID), "run")
+    assert code == 2
+    code, out = ctl(capsys, "-i", channel, "--json", "startup", str(DEVICE_ID))
+    assert json.loads(out)["step_name"] == "FAULT"
+
+
+def test_stop_aborts_a_running_startup_aid(channel: str, capsys: pytest.CaptureFixture[str]) -> None:
+    code, _ = ctl(capsys, "-i", channel, "set", str(DEVICE_ID), "unimoc.startup.run", "1")
+    assert code == 0
+    code, out = ctl(capsys, "-i", channel, "--json", "stop")
+    assert code == 0 and json.loads(out)["startup_aborted"] == [DEVICE_ID]

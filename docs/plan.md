@@ -376,6 +376,12 @@ asks to disconnect the motor, and Next out of CONNECT_MOTOR into phase 2
 needs the confirmation that the motor is connected (the barrier passes at
 once, so a second click must not cross it). The abort is open to every client.
 
+`cypilot-ctl startup NODE run` is the same flow at the terminal: it asks for
+the readings and the confirmations, waits for each step to measure, and
+aborts the run on Ctrl+C, the end of the input or an error (there is no lease:
+a killed process leaves the run to the E-stop). `cypilot-ctl stop` aborts it
+like stop all.
+
 ## 8. Signals, plots, scope
 
 ### 8.1 Live plots

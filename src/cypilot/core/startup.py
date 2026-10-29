@@ -81,8 +81,9 @@ PROMPTS = {
     "DUTY_FORCE_HIGH": "95 % duty on all phases: check the phase voltages with a scope.",
     "DC_LINK_VOLTAGE_CHECK": "Measure the DC-link voltage with a multimeter and enter it, then continue.",
     "GATE_DRIVER_ENABLE_CHECK": "Checking the response of the current sense to a duty imbalance.",
-    "CONNECT_MOTOR": "Phase 1 done. Power off, connect the motor (U, V, W and PE), power on, then continue: "
-    "phase 2 puts voltage on the motor. The shaft must turn freely.",
+    "CONNECT_MOTOR": "Phase 1 done, the outputs are off. Connect the motor (U, V, W and PE) without a power "
+    "cycle of the logic (it would end the run), then continue: phase 2 puts voltage on the motor. The shaft "
+    "must turn freely.",
     "PHASE_ADC_ALIGNMENT": "Sweeping the ADC trigger with current in phase A.",
     "CURRENT_SENSE_CALIBRATION": "Measure the phase-A current with a clamp meter, enter it, then continue.",
     "DONE": "The calibration is applied. Store it to keep it after a restart.",

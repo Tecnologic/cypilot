@@ -11,6 +11,7 @@ import json
 import logging
 import os
 import sys
+import threading
 from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
@@ -35,6 +36,7 @@ from cypilot.core.scope import TRIGGER_MODES, Capture, CaptureRequest, ScopeClie
 from cypilot.core.session import DEFAULT_LOCAL_NODE_ID, NodeSummary, Session
 from cypilot.core.signals import Recorder, SignalError, sources, subscribe
 from cypilot.core.sim_control import SimControl, SimStatus, SimulationError
+from cypilot.core.startup import CONNECT_MOTOR, StartupAid, StartupError, StartupState, abort_running
 from cypilot.core.transport import InterfaceError, find_adapters, parse_interfaces
 from cypilot.dsdl import DsdlError, DsdlSource, ensure_dsdl
 
@@ -73,11 +75,13 @@ def main(argv: Sequence[str] | None = None) -> int:
         ProfileError,
         ControlError,
         SimulationError,
+        StartupError,
         SignalError,
         ScopeError,
         RegisterError,
         TimeoutError,
         ValueError,
+        EOFError,
         OSError,
         pycyphal.transport.TransportError,
     ) as error:
@@ -236,6 +240,17 @@ def _parser() -> argparse.ArgumentParser:
     )
     scope.add_argument("--out", type=Path, help="CSV file of the capture (time column first)")
     scope.set_defaults(handler=_cmd_scope)
+
+    startup = commands.add_parser(
+        "startup",
+        help="UNIMOC's hardware startup aid: its state, an interactive run step by step, or an abort",
+    )
+    startup.add_argument("node", type=int)
+    startup.add_argument("action", nargs="?", choices=["status", "run", "abort"], default="status")
+    startup.add_argument(
+        "--step-timeout", type=float, default=60.0, help="seconds a step may measure (default 60)"
+    )
+    startup.set_defaults(handler=_cmd_startup)
 
     sim = commands.add_parser("sim", help="pause, run, advance or reset a simulated UNIMOC drive")
     sim.add_argument("node", type=int)
@@ -607,7 +622,7 @@ async def _feed(controller: Controller) -> None:
 
 
 def _cmd_stop(args: argparse.Namespace) -> int:
-    async def run() -> list[int]:
+    async def run() -> tuple[list[int], list[int]]:
         async with _session(args) as session:
             targets: list[DriveTarget] = []
             for node in await session.discover(args.wait):
@@ -619,10 +634,15 @@ def _cmd_stop(args: argparse.Namespace) -> int:
             controller = Controller(session)
             await controller.stop_all(targets)
             await controller.close()
-            return [t.node_id for t in targets]
+            # A running startup aid ignores readiness (cypilot.core.startup).
+            aborted = await abort_running(session.node, [t.node_id for t in targets])
+            return [t.node_id for t in targets], aborted
 
-    stopped = asyncio.run(run())
-    _print(args, {"sleep_sent_to": stopped}, "SLEEP sent to " + (", ".join(map(str, stopped)) or "no drive"))
+    stopped, aborted = asyncio.run(run())
+    text = "SLEEP sent to " + (", ".join(map(str, stopped)) or "no drive")
+    if aborted:
+        text += "; startup aid aborted on " + ", ".join(map(str, aborted))
+    _print(args, {"sleep_sent_to": stopped, "startup_aborted": aborted}, text)
     return 0
 
 
@@ -792,6 +812,108 @@ def _cmd_sim(args: argparse.Namespace) -> int:
     )
     _print(args, data, text)
     return 0
+
+
+async def _ask(prompt: str) -> str:
+    """A line from the terminal, without blocking the bus (EOFError at the end of the input).
+
+    A daemon thread, not the default executor: Ctrl+C must not wait for a pending ``input()``.
+    """
+    loop = asyncio.get_running_loop()
+    answer: asyncio.Future[str] = loop.create_future()
+
+    def deliver(result: str | None, error: BaseException | None) -> None:
+        if not answer.done():
+            if error is not None:
+                answer.set_exception(error)
+            else:
+                answer.set_result(result or "")
+
+    def read() -> None:
+        try:
+            line = input(prompt)
+        except (EOFError, KeyboardInterrupt) as error:
+            loop.call_soon_threadsafe(deliver, None, EOFError(str(error)))
+        else:
+            loop.call_soon_threadsafe(deliver, line, None)
+
+    threading.Thread(target=read, daemon=True).start()
+    return await answer
+
+
+async def _startup_wizard(aid: StartupAid, step_timeout: float) -> StartupState:
+    """Runs the aid step by step at the terminal; aborts it on Ctrl+C, the end of the input or an error."""
+    state = await aid.state()
+    if state.running:
+        raise StartupError(f"the startup aid of node {aid.node_id} runs already (abort it first)")
+    if (await _ask("Phase 1 runs WITHOUT a motor: is the motor disconnected? [yes/no] ")).strip() != "yes":
+        raise StartupError("not started")
+    try:
+        state = await aid.start()
+        while state.running:
+            print(f"[{state.step_name}] {state.prompt}", file=sys.stderr)  # stdout: the result
+            if state.needs == "vdc":
+                vdc = float(await _ask("DC-link voltage of the multimeter [V]: "))
+                state = await aid.set_external(vdc=vdc)
+            elif state.needs == "current":
+                current = float(await _ask("Phase-A current of the clamp meter [A]: "))
+                state = await aid.set_external(current=current)
+            if state.step == CONNECT_MOTOR:
+                answer = await _ask("Phase 2 puts voltage on the motor. Connected, shaft free? [yes/no] ")
+                if answer.strip() != "yes":
+                    raise StartupError("phase 2 not confirmed")
+                await aid.next_step(motor_connected=True)
+            else:
+                await _ask("Enter: next step (Ctrl+C aborts) ")
+                await aid.next_step()
+            state = await _next_state(aid, state.step, step_timeout)
+        return state
+    finally:
+        if (await aid.state()).running:
+            await aid.abort()
+            print(f"startup aid of node {aid.node_id} aborted (FAULT, outputs off)", file=sys.stderr)
+
+
+async def _next_state(aid: StartupAid, step: int, timeout: float) -> StartupState:
+    """Waits until the drive leaves ``step``: the step measures before it continues."""
+    deadline = asyncio.get_running_loop().time() + timeout
+    while True:
+        state = await aid.state()
+        if state.step != step or not state.running:
+            return state
+        if asyncio.get_running_loop().time() > deadline:
+            raise StartupError(f"{state.step_name} did not finish within {timeout} s (see the drive's log)")
+        await asyncio.sleep(0.2)
+
+
+def _cmd_startup(args: argparse.Namespace) -> int:
+    async def run() -> tuple[StartupState, dict[str, float]]:
+        async with _session(args) as session:
+            await session.wait_for_node(args.node)
+            aid = StartupAid(session.node, args.node)
+            try:
+                if args.action == "run":
+                    state = await _startup_wizard(aid, args.step_timeout)
+                elif args.action == "abort":
+                    await aid.abort()
+                    state = await aid.state()
+                else:
+                    state = await aid.state()
+                return state, await aid.calibration() if state.step_name == "DONE" else {}
+            finally:
+                aid.close()
+
+    state, calibration = asyncio.run(run())
+    data = state.json() | {"node": args.node, "calibration": calibration}
+    text = f"{state.step_name} ({'running' if state.running else 'not running'}): {state.prompt}"
+    passed = [name for name, ok in data["passed"].items() if ok]
+    if passed:
+        text += "\npassed: " + ", ".join(passed)
+    if calibration:
+        text += "\ncalibration: " + ", ".join(f"{k} = {v:.5g}" for k, v in calibration.items())
+        text += "\nstore it with: cypilot-ctl command " + str(args.node) + " store"
+    _print(args, data, text)
+    return 0 if args.action != "run" or state.step_name == "DONE" else 1
 
 
 def _cmd_dsdl(args: argparse.Namespace) -> int:

@@ -95,7 +95,10 @@ cypilot-ctl command 10 store                      # restart, store, factory-rese
 cypilot-ctl --json regs 10 > drive10.json
 cypilot-ctl caps 10                               # what the node supports, its ports and their types
 cypilot-ctl run 10 --current 0,2 --for 3          # enable, hold i_q = 2 A for 3 s, ramp down, disable
-cypilot-ctl stop                                  # SLEEP to every drive and zero setpoints, at once
+cypilot-ctl stop                                  # SLEEP to every drive and zero setpoints, at once; aborts a startup aid
+cypilot-ctl startup 10                            # UNIMOC's hardware startup aid: the step and the results
+cypilot-ctl startup 10 run                        # step by step at the terminal; Ctrl+C or the end of the input abort it
+cypilot-ctl startup 10 abort
 cypilot-ctl recover 10                            # STANDBY clears a trip; --restart for a latched E-stop
 cypilot-ctl sim 10 pause                          # simulated drive: status, pause, run, advance N, reset
 cypilot-ctl sim 10 advance 16000                  # one second of virtual time, as fast as it runs
