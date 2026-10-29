@@ -91,10 +91,11 @@ cypilot-ctl regs 10                               # all registers of node 10
 cypilot-ctl regs 10 'unimoc.motor.*'              # filtered
 cypilot-ctl get 10 unimoc.motor.limits.i_max
 cypilot-ctl set 10 unimoc.motor.limits.i_max 12.5 # exit code 1 when the node rejects it
-cypilot-ctl command 10 store                      # restart, store, factory-reset, emergency-stop
+cypilot-ctl command 10 store                      # restart, store, factory-reset, emergency-stop, reset-timing
 cypilot-ctl --json regs 10 > drive10.json
 cypilot-ctl caps 10                               # what the node supports, its ports and their types
 cypilot-ctl run 10 --current 0,2 --for 3          # enable, hold i_q = 2 A for 3 s, ramp down, disable
+cypilot-ctl run 10 --home --position 1 --for 3    # UNIMOC: home against the stop, then 1 rad from it
 cypilot-ctl stop                                  # SLEEP to every drive and zero setpoints, at once; aborts a startup aid
 cypilot-ctl startup 10                            # UNIMOC's hardware startup aid: the step and the results
 cypilot-ctl startup 10 run                        # step by step at the terminal; Ctrl+C or the end of the input abort it
@@ -221,6 +222,9 @@ Within that:
   and clamp-meter readings, Abort). It is aborted with the operator's lease,
   by STOP ALL and by the E-stop; phase 2 starts only after the confirmation
   that the motor is connected. Store the calibration after DONE.
+- **Home** (Setpoint card, position mode, a UNIMOC drive with the homing state):
+  the enabled drive runs against its stop and takes it as position 0; the
+  chip shows the run. Disabling, STOP ALL and the end of the lease end it.
 - **E-STOP (Shift+Esc)** sends `EMERGENCY_STOP` to every UNIMOC node; it stays
   latched until a restart.
 - **Login:** beyond this computer (`--host 0.0.0.0`) the app needs a PIN.

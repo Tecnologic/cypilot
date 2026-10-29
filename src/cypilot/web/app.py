@@ -35,10 +35,12 @@ from starlette.websockets import WebSocketDisconnect
 
 from cypilot import __version__
 from cypilot.core.control import ControlError, SetpointMode, find_target, recover
+from cypilot.core.homing import HomingError
 from cypilot.core.hub import BusConfig, BusHub, NotConnected, NotOperator
 from cypilot.core.registers import Register, RegisterError, RegisterValue, parse_like
 from cypilot.core.runs import RunError, replay_json
 from cypilot.core.scope import CaptureRequest, ScopeError
+from cypilot.core.session import call_command
 from cypilot.core.signals import SignalError, load_type, sources, type_name
 from cypilot.core.sim_control import SimControl, SimulationError
 from cypilot.core.startup import DONE, StartupError
@@ -56,8 +58,10 @@ COMMANDS = {
     "factory-reset": 65532,
     "emergency-stop": 65531,
     "store": 65530,
+    "reset-timing": 0x0300,
 }
-"""Standard ``uavcan.node.ExecuteCommand`` codes by name (as ``cypilot-ctl command``)."""
+"""``uavcan.node.ExecuteCommand`` codes by name (as ``cypilot-ctl command``): the standard ones
+and UNIMOC's RESET_TIMING (vendor code; homing has its own endpoint)."""
 COMMAND_STATUS = {
     0: "success",
     1: "failure",
@@ -285,6 +289,7 @@ def create_app(hub: BusHub, *, pin: str | None = None, wifi: Wifi | None = None)
     @app.exception_handler(SignalError)
     @app.exception_handler(SimulationError)
     @app.exception_handler(StartupError)
+    @app.exception_handler(HomingError)
     @app.exception_handler(InterfaceError)
     @app.exception_handler(ValueError)
     @app.exception_handler(LookupError)
@@ -426,10 +431,10 @@ def create_app(hub: BusHub, *, pin: str | None = None, wifi: Wifi | None = None)
         if code != COMMANDS["emergency-stop"]:  # stopping is never locked
             hub.require_operator(client_of(request))
         known(node_id)
-        result = await hub.require_session().execute_command(node_id, code, body.parameter)
+        result, output = await call_command(hub.require_session().node, node_id, code, body.parameter, 2.0)
         status_text = COMMAND_STATUS.get(result, str(result))
         hub.events.emit("command", node_id=node_id, command=code, status=status_text)
-        return {"command": code, "status": status_text, "ok": result == 0}
+        return {"command": code, "status": status_text, "ok": result == 0, "output": output}
 
     descriptions: dict[str, Any] = {}
 
@@ -473,6 +478,7 @@ def create_app(hub: BusHub, *, pin: str | None = None, wifi: Wifi | None = None)
                 mode.name.lower(): {"subject": subject, "components": mode.components}
                 for mode, subject in target.setpoints.items()
             },
+            "homing": target.homing,
         }
 
     @api.post("/nodes/{node_id}/enable")
@@ -499,6 +505,21 @@ def create_app(hub: BusHub, *, pin: str | None = None, wifi: Wifi | None = None)
         target = controller.known.get(node_id) or await find_target(hub.require_session(), node_id)
         controller.set_setpoint(target, mode, body.values, ramp=body.ramp)
         return {"node_id": node_id, "mode": mode.name.lower(), "values": body.values}
+
+    @api.get("/nodes/{node_id}/homing")
+    async def homing_state(node_id: int) -> dict[str, Any]:
+        """The latest homing state seen (``null`` before a run from here)."""
+        known(node_id)
+        state = hub.homing_state(node_id)
+        return {"node_id": node_id, "state": state.name if state is not None else None}
+
+    @api.post("/nodes/{node_id}/homing")
+    async def start_homing(node_id: int, request: Request) -> dict[str, Any]:
+        """START_HOMING: the drive must be engaged in position control (the drive says why not)."""
+        hub.require_operator(client_of(request))
+        known(node_id)
+        state = await hub.start_homing(node_id)
+        return {"node_id": node_id, "state": state.name}
 
     @api.post("/nodes/{node_id}/recover")
     async def recover_node(

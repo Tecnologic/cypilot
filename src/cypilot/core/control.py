@@ -32,6 +32,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from cypilot.core.capabilities import SETPOINTS, ports
+from cypilot.core.homing import HOMING_STATE_ID
 from cypilot.core.registers import RegisterClient
 from cypilot.core.session import Session
 from cypilot.core.status import Chip, VendorStatus
@@ -79,22 +80,26 @@ class DriveTarget:
     node_id: int
     readiness: int
     setpoints: dict[SetpointMode, int] = field(default_factory=dict)
+    homing: int | None = None
+    """The homing state subject (``cypilot.core.homing``); None: no homing."""
 
 
 async def find_target(session: Session, node_id: int) -> DriveTarget:
     """Reads the port registers of a drive (not the whole register list)."""
-    names = ["uavcan.sub.readiness.id", *(f"uavcan.sub.{name}.id" for name in SETPOINTS)]
+    names = ["uavcan.sub.readiness.id", *(f"uavcan.sub.{name}.id" for name in SETPOINTS), HOMING_STATE_ID]
     client = RegisterClient(session.node, node_id, timeout=1.0)
     try:
         registers = await client.scan(names)
     finally:
         client.close()
     found = {p.name: p.port_id for p in ports(registers, node_id) if p.kind == "sub" and p.enabled}
+    published = {p.name: p.port_id for p in ports(registers, node_id) if p.kind == "pub" and p.enabled}
+    homing = published.get("homing_state")
     readiness = found.get("readiness")
     if readiness is None:
         raise ControlError(f"node {node_id} has no readiness subscription; it cannot be enabled from the bus")
     setpoints = {mode: int(port) for mode in SetpointMode if (port := found.get(mode.value)) is not None}
-    return DriveTarget(node_id, int(readiness), setpoints)
+    return DriveTarget(node_id, int(readiness), setpoints, None if homing is None else int(homing))
 
 
 @dataclass

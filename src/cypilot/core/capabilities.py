@@ -15,6 +15,7 @@ import re
 from collections.abc import Iterable
 from dataclasses import dataclass
 
+from cypilot.core.homing import HOMING_STATE_ID
 from cypilot.core.registers import Register
 from cypilot.core.startup import has_startup
 from cypilot.core.status import VendorStatus
@@ -43,6 +44,7 @@ class Capability(enum.Enum):
     SCOPE = "scope"
     SIMULATION = "simulation"
     STARTUP = "startup aid"
+    HOMING = "homing"
     LOCAL_CONTROL = "local control"
     LOG = "log"
 
@@ -125,6 +127,8 @@ def capabilities(
         result.add(Capability.SIMULATION)
     if has_startup(registers):
         result.add(Capability.STARTUP)
+    if any(r.name == HOMING_STATE_ID for r in registers):
+        result.add(Capability.HOMING)
     if unimoc and vendor_code is not None and VendorStatus.decode(vendor_code).local_control:
         result.add(Capability.LOCAL_CONTROL)
     return result

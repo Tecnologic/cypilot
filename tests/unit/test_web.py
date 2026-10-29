@@ -176,6 +176,33 @@ def test_commands_need_the_operator_but_the_emergency_stop(dsdl: Path) -> None:
     run(body())
 
 
+def test_homing_needs_the_operator_and_tells_the_refusal(dsdl: Path) -> None:
+    async def body() -> None:
+        async with web() as (hub, client):
+            url = f"/api/nodes/{DEVICE_ID}/homing"
+            assert (await client.get(url)).json() == {"node_id": DEVICE_ID, "state": None}
+            assert (await client.post(url, headers=VIEWER)).status_code == 403
+            async with renewing(hub, "operator"):
+                await client.post("/api/control/take", headers=OPERATOR)
+                refused = await client.post(url, headers=OPERATOR)
+                assert refused.status_code == 400 and "position control" in refused.json()["detail"]
+                await client.post(f"/api/nodes/{DEVICE_ID}/enable", headers=OPERATOR)
+                started = (await client.post(url, headers=OPERATOR)).json()
+                assert started == {"node_id": DEVICE_ID, "state": "searching"}
+                await wait_for_async(lambda: _homing_done(client, url))
+                # The command endpoint returns the output text of the answer; RESET_TIMING is a name.
+                command = f"/api/nodes/{DEVICE_ID}/command"
+                reset = {"command": "reset-timing"}
+                result = (await client.post(command, json=reset, headers=OPERATOR)).json()
+                assert result == {"command": 0x0300, "status": "success", "ok": True, "output": ""}
+
+    run(body())
+
+
+async def _homing_done(client: httpx.AsyncClient, url: str) -> bool:
+    return bool((await client.get(url)).json()["state"] == "done")
+
+
 def test_pin_login(dsdl: Path) -> None:
     async def body() -> None:
         async with web(connect=False, pin="1234") as (_, client):
@@ -303,7 +330,7 @@ def test_the_drive_target(dsdl: Path) -> None:
     async def body() -> None:
         async with web() as (_, client):
             target = (await client.get(f"/api/nodes/{DEVICE_ID}/target")).json()
-            assert target == {"node_id": DEVICE_ID, "readiness": 106, "setpoints": {}}
+            assert target == {"node_id": DEVICE_ID, "readiness": 106, "setpoints": {}, "homing": 204}
 
     run(body())
 

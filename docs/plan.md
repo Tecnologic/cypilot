@@ -325,6 +325,24 @@ limits from the node's registers (`unimoc.motor.limits.i_max`, the speed range),
 a ramp, and a step or a square wave of chosen amplitude and period for
 tuning. The setpoint goes to zero on disable and on stop.
 
+Homing (UNIMOC, the drive has `uavcan.pub.homing_state.id`): in position
+mode the panel has **Home**, enabled while the drive is engaged. It sends
+`ExecuteCommand START_HOMING` (`0x0400`); the drive runs against its stop,
+takes the stop as position 0 and holds it until the setpoint changes. The
+answer says at once whether the run started (with the drive's reason, e.g.
+"engage in position control first"); the state chip follows the homing
+state subject (`uavcan.primitive.scalar.Natural8.1.0`: searching, done,
+fault). The lease keeps the drive engaged; the sleep at the end of the lease
+ends a run (fault). CLI: `cypilot-ctl run N --home [--position RAD]`. Homing and
+RESET_TIMING come with the same UNIMOC release as the startup aid's
+commands (section 7.7); a drive of v0.3.0 has no homing state and shows no
+Home.
+
+One-shot actions of the drive are commands, not register writes: UNIMOC's
+`RESET_TIMING` (`0x0300`) is `cypilot-ctl command N reset-timing`. Enabling
+stays on the readiness subject (section 7.1): it must be refreshed, so a lost
+cypilot disengages the drive; a command would stay in force.
+
 Cart: a "cart" panel publishes `unimoc.cart.WheelCommand` with one torque per
 wheel (or one for all) and `unimoc.cart.PedalState` for limp-home tests, only
 while no VDC or pedal unit is on the bus.

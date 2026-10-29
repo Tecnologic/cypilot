@@ -36,6 +36,7 @@ from typing import Any
 from cypilot import __version__
 from cypilot.core.control import ControlError, Controller, DriveTarget, find_target
 from cypilot.core.events import EventHub
+from cypilot.core.homing import HomingState, HomingWatch, start_homing
 from cypilot.core.recording import RunRecording
 from cypilot.core.runs import RunError, RunStore
 from cypilot.core.scope import ScopeClient
@@ -135,6 +136,7 @@ class BusHub:
         self.startup_status: StatusWatch | None = None
         self._startup_runs: set[int] = set()
         self._startup_watch: asyncio.Task[None] | None = None
+        self.homing_status: HomingWatch | None = None
 
     # --- Connection ------------------------------------------------------------
 
@@ -173,6 +175,7 @@ class BusHub:
             self.publishers = PublisherManager(session.node, self.events)
             self.scope = ScopeClient(session, self.events)
             self.startup_status = StatusWatch(session.node, self._on_startup_status)
+            self.homing_status = HomingWatch(session.node, self._on_homing)
             self.config = config
             self._connection += 1
             self._snapshots = asyncio.get_running_loop().create_task(self._publish_snapshots(session))
@@ -211,6 +214,9 @@ class BusHub:
         if self.startup_status is not None:
             self.startup_status.close()
             self.startup_status = None
+        if self.homing_status is not None:
+            self.homing_status.close()
+            self.homing_status = None
         if self.controller is not None:
             await self.controller.close()  # SLEEP to every engaged drive
         if self.session is not None:
@@ -392,6 +398,25 @@ class BusHub:
         result = await self.controller.emergency_stop(targets)
         self.events.emit("estop", nodes={str(node_id): status for node_id, status in result.items()})
         return result
+
+    # --- Homing ---------------------------------------------------------------
+
+    async def start_homing(self, node_id: int) -> HomingState:
+        """START_HOMING on an engaged drive; its state reaches the clients as ``homing`` events.
+
+        A run needs the drive engaged in position control: the lease keeps it,
+        and the sleep at the end of the lease ends the run (FAULT).
+        """
+        session = self.require_session()
+        assert self.homing_status is not None
+        target = await find_target(session, node_id)
+        return await start_homing(session.node, node_id, target.homing, self.homing_status)
+
+    def homing_state(self, node_id: int) -> HomingState | None:
+        return self.homing_status.latest(node_id) if self.homing_status is not None else None
+
+    def _on_homing(self, node_id: int, state: HomingState) -> None:
+        self.events.emit("homing", node_id=node_id, state=state.name)
 
     # --- Startup aid ----------------------------------------------------------
 

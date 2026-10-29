@@ -120,6 +120,7 @@ window.cypilot = function () {
     open: {},
     target: null,
     targetError: '',
+    homing: null,
     setpoint: { mode: '', values: [0, 0], ramp: 0.5 },
     allowRestart: false,
     plotSources: [],
@@ -259,6 +260,7 @@ window.cypilot = function () {
         case 'run': this.onRun(e); break;
         case 'wifi': this.loadWifi(); break;
         case 'startup': this.onStartup(e); break;
+        case 'homing': if (e.node_id === this.selected) this.homing = e.state; break;
       }
     },
 
@@ -375,7 +377,7 @@ window.cypilot = function () {
       id = Number(id);
       if (id === this.selected) return;
       this.selected = id;
-      this.registers = []; this.target = null; this.targetError = ''; this.plotSources = [];
+      this.registers = []; this.target = null; this.targetError = ''; this.homing = null; this.plotSources = [];
       this.sim.status = null; this.sim.error = '';
       this.startup = { state: null, error: '', vdc: '', current: '' };
       this.$nextTick(() => this.onView());
@@ -454,6 +456,7 @@ window.cypilot = function () {
         const target = await api('GET', `/api/nodes/${node}/target`);
         if (node !== this.selected) return;
         this.target = target;
+        this.homing = target.homing === null ? null : (await api('GET', `/api/nodes/${node}/homing`)).state;
         const modes = Object.keys(target.setpoints);
         if (!modes.includes(this.setpoint.mode)) this.setpoint.mode = modes[0] ?? '';
       } catch (e) {
@@ -479,6 +482,13 @@ window.cypilot = function () {
       if (zero) this.setpoint.values = this.setpoint.values.map(() => 0);
       try {
         await api('POST', `/api/nodes/${this.selected}/setpoint`, { mode: this.setpoint.mode, values, ramp: Number(this.setpoint.ramp) });
+      } catch (e) { this.fail(e); }
+    },
+    homingShown() { return this.target?.homing != null && this.setpoint.mode === 'position'; },
+    async startHoming() {
+      if (!confirm('Home the drive? The shaft runs at the homing speed until it stalls against its stop; that stop becomes position 0.')) return;
+      try {
+        this.homing = (await api('POST', `/api/nodes/${this.selected}/homing`)).state;
       } catch (e) { this.fail(e); }
     },
     // --- Startup aid (UNIMOC hardware bring-up) --------------------------------------

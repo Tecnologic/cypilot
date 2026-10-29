@@ -255,7 +255,13 @@
         <div class="row">
           <button id="send-setpoint" class="primary" @click="sendSetpoint()" :disabled="!isOperator() || !engaged()">Send</button>
           <button @click="sendSetpoint(true)" :disabled="!isOperator() || !engaged()">Zero</button>
+          <button id="home" x-show="homingShown()" @click="startHoming()" :disabled="!isOperator() || !engaged() || homing === 'searching'"
+                  title="Run against the stop and take it as position 0">Home</button>
+          <span class="chip" id="homing-state" x-show="homingShown() && homing"
+                :class="homing === 'searching' ? 'warn' : (homing === 'fault' ? 'bad' : '')" x-text="`homing ${homing}`"></span>
         </div>
+        <p class="hint" x-show="homingShown()">Home needs the drive enabled with a position setpoint; the next setpoint
+          counts from the stop. Disabling ends a run.</p>
       </div>
     </template>
   </section>

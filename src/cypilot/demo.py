@@ -15,7 +15,11 @@ It behaves like a small drive with cymon-lib:
 - for cypilot's control it passes as a UNIMOC drive: the probe register
   ``unimoc.settings.pending`` and the vendor status bits of the heartbeat
   (power stage enabled and engaged while engaged, E-stop latched);
-- ExecuteCommand (restart, store, emergency stop) and diagnostic records;
+- ExecuteCommand (restart, store, emergency stop, RESET_TIMING) and diagnostic records;
+- UNIMOC's homing: START_HOMING while engaged (the demo has no setpoint
+  modes; it takes an engaged drive as in position control), the run
+  searches for ``homing_time`` and is done; the state on
+  ``uavcan.pub.homing_state`` (subject 204);
 - UNIMOC's startup aid: the commissioning commands, the status message
   ``unimoc.drive.CommissioningStatus.0.1`` on subject 215 and the result
   registers (:class:`DemoStartup`).
@@ -39,6 +43,7 @@ import reg.udral.service.common
 import uavcan.diagnostic
 import uavcan.node
 import uavcan.primitive.array
+import uavcan.primitive.scalar
 from pycyphal.application.register import Bit, Natural8, Natural16, Real32, String, Value
 
 from cypilot import __version__
@@ -53,6 +58,9 @@ SERVICE_IDS = {
 TELEMETRY_SUBJECT = 1000
 READINESS_SUBJECT = 106
 COMMISSIONING_SUBJECT = 215
+HOMING_SUBJECT = 204
+RESET_TIMING, START_HOMING = 0x0300, 0x0400
+HOMING_IDLE, HOMING_SEARCHING, HOMING_DONE, HOMING_FAULT = 0, 1, 3, 4
 ENGAGED = 3
 
 IDLE, CONFIGURED, ARMED, TRIGGERED, COMPLETE = range(5)
@@ -347,6 +355,7 @@ class DemoDevice:
         env["UAVCAN__PUB__TELEMETRY__ID"] = str(TELEMETRY_SUBJECT)
         env["UAVCAN__SUB__READINESS__ID"] = str(READINESS_SUBJECT)
         env["UAVCAN__PUB__COMMISSIONING__ID"] = str(COMMISSIONING_SUBJECT)
+        env["UAVCAN__PUB__HOMING_STATE__ID"] = str(HOMING_SUBJECT)
         registry = pycyphal.application.make_registry(None, env)
         info = uavcan.node.GetInfo_1.Response(
             protocol_version=uavcan.node.Version_1(1, 0),
@@ -363,6 +372,10 @@ class DemoDevice:
         self.estopped = False
         self.readiness_deadline = 0.0
         self.store_count = 0
+        self.timing_resets = 0
+        self.homing = HOMING_IDLE
+        self.homing_time = 0.3
+        self._homing_done_at = 0.0
         self.t = 0.0
         registers = self.node.registry
         registers["demo.amplitude"] = lambda: Value(real32=Real32([self.amplitude])), self._set_amplitude
@@ -398,6 +411,10 @@ class DemoDevice:
         self._commissioning = self.node.make_publisher(unimoc.drive.CommissioningStatus_0_1, "commissioning")
         self._commissioning_last: Any = None
         self._commissioning_due = 0.0
+        homing_type = uavcan.primitive.scalar.Natural8_1_0
+        self._homing_publisher = self.node.make_publisher(homing_type, "homing_state")
+        self._homing_last = -1
+        self._homing_due = 0.0
 
     def _set_amplitude(self, value: Value) -> None:
         self.amplitude = float(value.real32.value[0])
@@ -475,6 +492,7 @@ class DemoDevice:
                 await self._set_engaged(False, "readiness timeout")
             self._update_status()
             await self._publish_commissioning()
+            await self._publish_homing()
             # Slow signals: the 20 Hz telemetry would alias the 50 Hz scope signal.
             w = 2 * math.pi * 0.5 * self.t
             values = [self.amplitude * math.sin(w), self.amplitude * math.cos(w), 5.0 * float(self.engaged)]
@@ -490,6 +508,20 @@ class DemoDevice:
         self._commissioning_last = fields
         self._commissioning_due = now + (0.5 if self.startup.running else 2.0)
         await self._commissioning.publish(status)
+
+    async def _publish_homing(self) -> None:
+        """The homing run and its state: on every change, at 2 Hz searching and 0.5 Hz otherwise."""
+        now = time.monotonic()
+        if self.homing == HOMING_SEARCHING:
+            if not self.engaged:
+                self.homing = HOMING_FAULT
+            elif now >= self._homing_done_at:
+                self.homing = HOMING_DONE
+        if self.homing == self._homing_last and now < self._homing_due:
+            return
+        self._homing_last = self.homing
+        self._homing_due = now + (0.5 if self.homing == HOMING_SEARCHING else 2.0)
+        await self._homing_publisher.publish(uavcan.primitive.scalar.Natural8_1_0(self.homing))
 
     def _update_status(self) -> None:
         """The UNIMOC vendor status bits: power stage (0..2), engaged (3), E-stop latched (5)."""
@@ -533,6 +565,17 @@ class DemoDevice:
             self.estopped = False
             self._update_status()
             self._apply_trigger_ports()
+            return Status(status=Status.STATUS_SUCCESS)
+        if request.command == RESET_TIMING:
+            self.timing_resets += 1
+            return Status(status=Status.STATUS_SUCCESS)
+        if request.command == START_HOMING:
+            if not self.engaged:
+                return Status(status=Status.STATUS_BAD_STATE, output="engage in position control first")
+            if self.homing == HOMING_SEARCHING:
+                return Status(status=Status.STATUS_BAD_STATE, output="homing runs already")
+            self.homing = HOMING_SEARCHING
+            self._homing_done_at = time.monotonic() + self.homing_time
             return Status(status=Status.STATUS_SUCCESS)
         if self.startup.handles(request.command):
             status, output = self.startup.command(

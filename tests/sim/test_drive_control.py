@@ -74,6 +74,17 @@ def test_stop_reaches_every_drive(ctl: Ctl) -> None:
     assert ctl.json("stop")["sleep_sent_to"] == [DRIVE]
 
 
+def test_reset_timing_and_homing_against_the_stop(ctl: Ctl) -> None:
+    assert ctl.json("command", str(DRIVE), "reset-timing")["status"] == 0
+    # A locked shaft (imposed 0 rad/s) is the stop: the run stalls where it starts and is done.
+    assert ctl.run("set", str(DRIVE), "unimoc.sim.shaft_mode", "1")[0] == 0
+    try:
+        run = ctl.json("run", str(DRIVE), "--home", "--for", "0.5")
+        assert run["homing"] == "done" and run["state"] == ["disabled"]
+    finally:
+        assert ctl.run("set", str(DRIVE), "unimoc.sim.shaft_mode", "0")[0] == 0
+
+
 def test_an_emergency_stop_is_refused_and_needs_a_restart(ctl: Ctl) -> None:
     assert ctl.json("command", str(DRIVE), "emergency-stop")["status"] == 0
     ctl.wait_for(lambda nodes: any("E-stop latched" in n["state"] for n in nodes))

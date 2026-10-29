@@ -30,10 +30,11 @@ from cypilot.core.control import (
     find_target,
     recover,
 )
+from cypilot.core.homing import HomingError, HomingWatch, start_homing
 from cypilot.core.profiles import Profile, ProfileError
 from cypilot.core.registers import Register, RegisterError, parse_like
 from cypilot.core.scope import TRIGGER_MODES, Capture, CaptureRequest, ScopeClient, ScopeError
-from cypilot.core.session import DEFAULT_LOCAL_NODE_ID, NodeSummary, Session
+from cypilot.core.session import DEFAULT_LOCAL_NODE_ID, NodeSummary, Session, call_command
 from cypilot.core.signals import Recorder, SignalError, sources, subscribe
 from cypilot.core.sim_control import SimControl, SimStatus, SimulationError
 from cypilot.core.startup import MOTOR_CONNECTED, StartupAid, StartupError, StartupState, abort_running
@@ -45,8 +46,10 @@ COMMANDS = {
     "factory-reset": 65532,
     "emergency-stop": 65531,
     "store": 65530,
+    "reset-timing": 0x0300,
 }
-"""Standard ``uavcan.node.ExecuteCommand`` codes as UNIMOC uses them (UNIMOC README, "Commands")."""
+"""``uavcan.node.ExecuteCommand`` codes as UNIMOC uses them (UNIMOC README, "Commands"): the
+standard ones and the vendor RESET_TIMING; homing is ``run --home``."""
 
 COMMAND_STATUS = {
     0: "success",
@@ -76,6 +79,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         ControlError,
         SimulationError,
         StartupError,
+        HomingError,
         SignalError,
         ScopeError,
         RegisterError,
@@ -194,6 +198,15 @@ def _parser() -> argparse.ArgumentParser:
     setpoint.add_argument("--current", type=_floats(2), metavar="I_D,I_Q", help="d/q current [A]")
     setpoint.add_argument("--torque", type=_floats(1), metavar="NM", help="torque [N m]")
     setpoint.add_argument("--speed", type=_floats(1), metavar="RAD_S", help="mechanical speed [rad/s]")
+    setpoint.add_argument(
+        "--position", type=_floats(1), metavar="RAD", help="mechanical position [rad] from home"
+    )
+    run.add_argument(
+        "--home",
+        action="store_true",
+        help="home first (UNIMOC: run against the stop, it becomes 0), then hold the --position",
+    )
+    run.add_argument("--home-timeout", type=float, default=30.0, help="seconds the homing run may take")
     run.add_argument("--for", dest="duration", type=float, default=2.0, help="seconds to hold (default 2)")
     run.add_argument("--ramp", type=float, default=0.5, help="seconds to ramp up and down (default 0.5)")
     run.set_defaults(handler=_cmd_run)
@@ -418,13 +431,13 @@ def _cmd_set(args: argparse.Namespace) -> int:
 
 
 def _cmd_command(args: argparse.Namespace) -> int:
-    async def run() -> int:
+    async def run() -> tuple[int, str]:
         async with _session(args) as session:
-            return await session.execute_command(args.node, COMMANDS[args.command])
+            return await call_command(session.node, args.node, COMMANDS[args.command], "", 2.0)
 
-    status = asyncio.run(run())
-    text = COMMAND_STATUS.get(status, f"status {status}")
-    _print(args, {"command": args.command, "status": status, "text": text}, text)
+    status, output = asyncio.run(run())
+    text = COMMAND_STATUS.get(status, f"status {status}") + (f": {output}" if output else "")
+    _print(args, {"command": args.command, "status": status, "text": text, "output": output}, text)
     return 0 if status == 0 else 1
 
 
@@ -578,9 +591,12 @@ def _cmd_run(args: argparse.Namespace) -> int:
             (SetpointMode.CURRENT, args.current),
             (SetpointMode.TORQUE, args.torque),
             (SetpointMode.SPEED, args.speed),
+            (SetpointMode.POSITION, args.position),
         )
         if values is not None
     ]
+    if args.home and args.position is None:
+        chosen = [(SetpointMode.POSITION, (0.0,))]  # the run needs position control: hold the start
 
     async def run() -> dict[str, Any]:
         async with _session(args) as session:
@@ -591,6 +607,9 @@ def _cmd_run(args: argparse.Namespace) -> int:
             try:
                 await controller.engage(target)
                 await controller.wait_engaged(args.node)
+                homed = None
+                if args.home:
+                    homed = await _home(session, controller, target, args.home_timeout)
                 for mode, values in chosen:
                     controller.set_setpoint(target, mode, values, ramp=args.ramp)
                 await asyncio.sleep(args.duration)
@@ -601,6 +620,7 @@ def _cmd_run(args: argparse.Namespace) -> int:
                     "node": args.node,
                     "readiness": target.readiness,
                     "state": [c.value for c in node.chips],
+                    "homing": homed,
                 }
             finally:
                 feeder.cancel()
@@ -610,9 +630,29 @@ def _cmd_run(args: argparse.Namespace) -> int:
     _print(
         args,
         data,
-        f"node {data['node']} ran on readiness {data['readiness']}; now: {', '.join(data['state'])}",
+        ("homed; " if data["homing"] else "")
+        + f"node {data['node']} ran on readiness {data['readiness']}; now: {', '.join(data['state'])}",
     )
     return 0
+
+
+async def _home(session: Session, controller: Controller, target: DriveTarget, timeout: float) -> str:
+    """Starts the homing run in position control and waits until it ends (done or fault).
+
+    A position setpoint of 0 selects position control; the run starts two
+    keep-alive periods later and ignores the setpoint until it is done.
+    """
+    controller.set_setpoint(target, SetpointMode.POSITION, (0.0,), ramp=0.0)
+    await asyncio.sleep(0.1)
+    watch = HomingWatch(session.node)
+    try:
+        await start_homing(session.node, target.node_id, target.homing, watch)
+        state = await watch.wait(target.node_id, lambda state: not state.running, timeout=timeout)
+    finally:
+        watch.close()
+    if state.name != "done":
+        raise HomingError(f"node {target.node_id}: homing ended in {state.name}")
+    return state.name
 
 
 async def _feed(controller: Controller) -> None:
