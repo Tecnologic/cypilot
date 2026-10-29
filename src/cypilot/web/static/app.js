@@ -154,7 +154,6 @@ window.cypilot = function () {
       });
       setInterval(() => { if (this.wsOpen) this.ws.send(JSON.stringify({ type: 'renew' })); }, RENEW_MS);
       setInterval(() => { if (this.status?.connected && this.view === 'sim' && this.selected !== null) this.loadSim(); }, 1000);
-      setInterval(() => { if (this.status?.connected && this.view === 'control' && this.startup.state?.running) this.loadStartup(); }, 500);
       await this.checkAuth();
     },
 
@@ -259,6 +258,7 @@ window.cypilot = function () {
         case 'capture': this.scope.state = e.state; break;
         case 'run': this.onRun(e); break;
         case 'wifi': this.loadWifi(); break;
+        case 'startup': this.onStartup(e); break;
       }
     },
 
@@ -493,6 +493,13 @@ window.cypilot = function () {
         if (node === this.selected) { this.startup.state = null; this.startup.error = e.message; }
       }
     },
+    onStartup(e) {
+      // The status message of the drive, on every change (cypilot.core.startup).
+      if (!e.state || e.node_id !== this.selected || !this.startup.state) return;
+      const done = e.state.step_name === 'DONE' && this.startup.state.step_name !== 'DONE';
+      this.startup.state = { ...e.state, calibration: done ? {} : (this.startup.state.calibration ?? {}) };
+      if (done) this.loadStartup();
+    },
     async startupAction(action) {
       const s = this.startup.state;
       const body = { action };
@@ -501,8 +508,8 @@ window.cypilot = function () {
         if (!confirm('Phase 2 puts voltage on the motor. Is the motor connected (U, V, W and PE) and the shaft free?')) return;
         body.motor_connected = true;
       }
-      if (s?.needs === 'vdc' && this.startup.vdc !== '') body.ext_vdc = Number(this.startup.vdc);
-      if (s?.needs === 'current' && this.startup.current !== '') body.ext_current = Number(this.startup.current);
+      if (s?.reading === 'vdc' && this.startup.vdc !== '') body.ext_vdc = Number(this.startup.vdc);
+      if (s?.reading === 'current' && this.startup.current !== '') body.ext_current = Number(this.startup.current);
       try {
         this.startup.state = { ...(await api('POST', `/api/nodes/${this.selected}/startup`, body)), calibration: {} };
         if (action !== 'external') this.startup.vdc = this.startup.current = '';

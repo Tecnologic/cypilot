@@ -373,15 +373,27 @@ def test_the_startup_aid_needs_the_operator_and_every_stop_aborts_it(dsdl: Path)
                 state = (await client.post(url, json={"action": "start"}, headers=OPERATOR)).json()
                 assert state["running"] is True and state["step_name"] == "PWM_DISABLE"
                 assert "scope" in state["prompt"]
-                # The generic register editor: a step write answers with the step, and is accepted.
-                step = f"/api/nodes/{DEVICE_ID}/registers/unimoc.startup.step"
-                result = (await client.put(step, json={"value": 1}, headers=OPERATOR)).json()
-                assert result["accepted"] is True and result["register"]["value"] == [1]
-                await wait_for_async(lambda: _step_is(client, "ADC_OFFSET_CAL"), timeout=3.0)
+                # The status message reaches the clients as events.
+                await wait_for_async(lambda: _state_is(client, "waiting"), timeout=3.0)
+                async with hub.events.listen() as events:
+                    assert (
+                        await client.post(url, json={"action": "next"}, headers=OPERATOR)
+                    ).status_code == 200
+                    await wait_for_async(lambda: _step_is(client, "ADC_OFFSET_CAL"), timeout=3.0)
+                    seen = [events.get_nowait() for _ in range(events.qsize())]
+                assert any(
+                    event["kind"] == "startup" and event["state"]["step_name"] == "ADC_OFFSET_CAL"
+                    for event in seen
+                )
+                # A continue while the step measures: refused, with the drive's reason.
+                hub._devices[0].startup.measure_time = 1.0
+                refused = await client.post(url, json={"action": "next"}, headers=OPERATOR)
+                assert refused.status_code == 400 and "measuring" in refused.json()["detail"]
+                await wait_for_async(lambda: _state_is(client, "waiting"), timeout=3.0)
                 # Readiness SLEEP does not stop it; stop all (any client) aborts it.
                 assert DEVICE_ID in (await client.post("/api/stop", headers=VIEWER)).json()["stopped"]
-                state = (await client.get(url)).json()
-                assert state["running"] is False and state["step_name"] == "FAULT"
+                await wait_for_async(lambda: _step_is(client, "FAULT"), timeout=3.0)
+                assert not await startup_running(client)
 
                 # The abort is open to every client.
                 await client.post(url, json={"action": "start"}, headers=OPERATOR)
@@ -395,21 +407,22 @@ def test_the_startup_aid_needs_the_operator_and_every_stop_aborts_it(dsdl: Path)
             await wait_for_async(lambda: _not(startup_running(client)), timeout=3.0)
             assert (await client.get(url)).json()["step_name"] == "FAULT"
 
-            # Released control and a run started from the register editor: aborted too.
+            # Released control: aborted too.
             async with renewing(hub, "operator"):
                 await client.post("/api/control/take", headers=OPERATOR)
-                run_register = f"/api/nodes/{DEVICE_ID}/registers/unimoc.startup.run"
-                assert (await client.put(run_register, json={"value": 1}, headers=OPERATOR)).json()[
-                    "accepted"
-                ]
+                await client.post(url, json={"action": "start"}, headers=OPERATOR)
                 await client.post("/api/control/release", headers=OPERATOR)
-                assert not await startup_running(client)
+                await wait_for_async(lambda: _not(startup_running(client)), timeout=3.0)
 
     run(body())
 
 
 async def _step_is(client: httpx.AsyncClient, name: str) -> bool:
     return bool((await client.get(f"/api/nodes/{DEVICE_ID}/startup")).json()["step_name"] == name)
+
+
+async def _state_is(client: httpx.AsyncClient, name: str) -> bool:
+    return bool((await client.get(f"/api/nodes/{DEVICE_ID}/startup")).json()["state"] == name)
 
 
 async def _not(awaitable: Any) -> bool:

@@ -169,7 +169,7 @@ one whose uptime went backwards (restart), the core runs:
 | Cart drive | `uavcan.sub.wheel_command.id`, publishes `unimoc.cart.DriveStatus` | Wheel index, cart status, limp-home display |
 | Scope | the five `uavcan.srv.cymon_*.id` registers enabled and served | Scope, multi-node capture |
 | Simulation | registers `unimoc.sim.*` | Pause, advance, reset, virtual clock |
-| Startup aid | register `unimoc.startup.run` | Hardware bring-up panel (section 7.7) |
+| Startup aid | register `uavcan.pub.commissioning.id` | Hardware bring-up panel (section 7.7) |
 | Local control (e-bike, PR #29) | vendor status bit 7 (section 6) | No engage button: the drive engages by itself; STANDBY and SLEEP stay |
 | VDC, BMS | publishes `unimoc.cart.WheelCommand` or `unimoc.cart.BatteryStatus` | Cart overview, battery panel (when these nodes exist) |
 | Log | publishes `uavcan.diagnostic.Record` | Log view with node filter |
@@ -362,19 +362,39 @@ multimeter, the gate driver), the CONNECT_MOTOR barrier, phase 2 with the
 motor (ADC trigger sweep, current-sense gain against a clamp meter), DONE.
 The drive applies the calibration at DONE; the Store command keeps it.
 
-The Control view has a panel for it when the node has `unimoc.startup.run`
-(`core/startup.py`, `/api/nodes/{id}/startup`): the step, what to do in it,
-fields for the two meter readings in the steps that need them, Start, Next
-and Abort, the passed steps and, at DONE, the calibration. The drive never
-advances by itself and keeps one Next request per step.
+The bus contract is UNIMOC's commissioning interface (its
+`docs/motor_identification_plan.md`, section 5.4): the actions are
+ExecuteCommand codes (START_STARTUP_AID 0x0200, CONTINUE 0x0202, SET_READING
+0x0203, ABORT 0x0204) whose answer says at once whether the drive took them,
+with its reason in the output text; the progress is the status message
+`unimoc.drive.CommissioningStatus.0.1` on the subject of
+`uavcan.pub.commissioning.id`, published on every change, at 2 Hz in a run
+and 0.5 Hz otherwise; the calibration stays registers. cypilot follows the
+status by subscription (`StatusWatch`, one per hub) instead of polling, and
+the hub sends each change to the clients as a `startup` event. The contract
+comes with the UNIMOC release after v0.3.0: until `DEFAULT_UNIMOC_REF` is
+bumped to it, the DSDL and the simulation must come from a local UNIMOC
+checkout (`CYPILOT_UNIMOC`, `CYPILOT_SIM_EXE`), and a drive of v0.3.0 shows
+no startup panel.
+
+The Control view has a panel for it when the node has
+`uavcan.pub.commissioning.id` (`core/startup.py`, `/api/nodes/{id}/startup`):
+the step, its state (measuring with its progress, waiting, needs a reading,
+done, failed, aborted), what to do in it, fields for the two meter readings in
+the steps that need them, Start, Next and Abort, the passed and failed steps
+and, at DONE, the calibration. The drive never advances by itself; Next is
+off while a step measures, and the drive refuses a continue then or before
+its reading.
 
 Safety: while it runs the aid releases the power stage itself, without
-readiness, so SLEEP does not stop it. cypilot aborts it (`run` = 0) on stop
-all (every UNIMOC drive), when the operator's lease lapses, is released or its
+readiness, so SLEEP does not stop it. cypilot aborts it (ABORT) on stop
+all (every UNIMOC drive; a drive of UNIMOC up to v0.3.0 gets `unimoc.startup.run`
+= 0), when the operator's lease lapses, is released or its
 client leaves, and on a disconnect; the E-stop aborts it in the drive. Start
 asks to disconnect the motor, and Next out of CONNECT_MOTOR into phase 2
-needs the confirmation that the motor is connected (the barrier passes at
-once, so a second click must not cross it). The abort is open to every client.
+needs the confirmation that the motor is connected: CONTINUE takes
+`motor-connected` there and the drive refuses it without, so a second click
+cannot cross the barrier. The abort is open to every client.
 
 `cypilot-ctl startup NODE run` is the same flow at the terminal: it asks for
 the readings and the confirmations, waits for each step to measure, and

@@ -266,19 +266,28 @@ class Session:
         self, node_id: int, command: int, parameter: str = "", timeout: float = 2.0
     ) -> int:
         """Sends ``uavcan.node.ExecuteCommand`` and returns the status of the answer."""
-        import uavcan.node
+        status, _ = await call_command(self.node, node_id, command, parameter, timeout)
+        return status
 
-        client = self.node.make_client(uavcan.node.ExecuteCommand_1_3, node_id)
-        client.response_timeout = timeout
-        try:
-            result = await client.call(
-                uavcan.node.ExecuteCommand_1_3.Request(command=command, parameter=parameter)
-            )
-        finally:
-            client.close()
-        if result is None:
-            raise TimeoutError(f"node {node_id} did not answer ExecuteCommand {command}")
-        return int(result[0].status)
+
+async def call_command(
+    node: Any, node_id: int, command: int, parameter: str = "", timeout: float = 1.0
+) -> tuple[int, str]:
+    """``uavcan.node.ExecuteCommand``: the status and the output text of the answer."""
+    import uavcan.node
+
+    client = node.make_client(uavcan.node.ExecuteCommand_1_3, node_id)
+    client.response_timeout = timeout
+    try:
+        result = await client.call(
+            uavcan.node.ExecuteCommand_1_3.Request(command=command, parameter=parameter)
+        )
+    finally:
+        client.close()
+    if result is None:
+        raise TimeoutError(f"node {node_id} did not answer ExecuteCommand {command}")
+    response = result[0]
+    return int(response.status), bytes(response.output.tobytes()).decode(errors="replace")
 
 
 def _subjects(subject_list: Any) -> frozenset[int]:

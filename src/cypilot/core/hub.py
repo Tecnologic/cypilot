@@ -16,7 +16,8 @@ controller's watchdog, so a phone that loses Wi-Fi, sleeps or closes the tab
 puts the engaged drives to sleep within the lease time. A startup aid the
 operator runs (``cypilot.core.startup``) owns the outputs without readiness,
 so it is aborted instead: when the lease lapses, is released or its client
-leaves, on a disconnect, and on stop all (every UNIMOC drive).
+leaves, on a disconnect, and on stop all (every UNIMOC drive). Its status
+messages reach the clients as ``startup`` events.
 
 Everything runs on the one asyncio loop of the web server.
 """
@@ -39,7 +40,7 @@ from cypilot.core.recording import RunRecording
 from cypilot.core.runs import RunError, RunStore
 from cypilot.core.scope import ScopeClient
 from cypilot.core.session import DEFAULT_LOCAL_NODE_ID, SEVERITY_NAMES, LogRecord, NodeSummary, Session
-from cypilot.core.startup import abort_running
+from cypilot.core.startup import StartupAid, StartupState, StatusWatch, abort_running
 from cypilot.core.subjects import PublisherManager, SubjectMonitor
 from cypilot.core.transport import make_transport, parse_interface, parse_interfaces
 
@@ -131,6 +132,7 @@ class BusHub:
         self.runs = runs
         self.recording: RunRecording | None = None
         self._capturing: Session | None = None
+        self.startup_status: StatusWatch | None = None
         self._startup_runs: set[int] = set()
         self._startup_watch: asyncio.Task[None] | None = None
 
@@ -170,6 +172,7 @@ class BusHub:
             self.subjects = SubjectMonitor(session.node, self.events)
             self.publishers = PublisherManager(session.node, self.events)
             self.scope = ScopeClient(session, self.events)
+            self.startup_status = StatusWatch(session.node, self._on_startup_status)
             self.config = config
             self._connection += 1
             self._snapshots = asyncio.get_running_loop().create_task(self._publish_snapshots(session))
@@ -205,6 +208,9 @@ class BusHub:
             self.subjects.close()
         if self.scope is not None:
             self.scope.close()
+        if self.startup_status is not None:
+            self.startup_status.close()
+            self.startup_status = None
         if self.controller is not None:
             await self.controller.close()  # SLEEP to every engaged drive
         if self.session is not None:
@@ -389,6 +395,16 @@ class BusHub:
 
     # --- Startup aid ----------------------------------------------------------
 
+    def startup_aid(self, node_id: int) -> StartupAid:
+        """The startup aid of a drive on the hub's status subscription; close it when done."""
+        session = self.require_session()
+        return StartupAid(session.node, node_id, watch=self.startup_status)
+
+    def _on_startup_status(self, node_id: int, state: StartupState) -> None:
+        if not state.running:
+            self._startup_runs.discard(node_id)
+        self.events.emit("startup", node_id=node_id, state=state.json())
+
     def startup_started(self, node_id: int) -> None:
         """The operator started the startup aid of a drive: it is aborted when the lease ends."""
         self._startup_runs.add(node_id)
@@ -396,10 +412,20 @@ class BusHub:
             self._startup_watch = asyncio.get_running_loop().create_task(self._watch_startup())
 
     async def abort_startup(self, reason: str, node_ids: list[int]) -> list[int]:
-        """Aborts the startup aid where it runs on ``node_ids``; the nodes it stopped."""
+        """Aborts the startup aid where it runs on ``node_ids``; the nodes it stopped.
+
+        ABORT goes to every node (a no-op where nothing runs, and a run started
+        by another tool is unknown here); the nodes it stopped are those whose
+        last status was a run or whose run the operator started here.
+        """
         if self.session is None or not node_ids:
             return []
-        stopped = await abort_running(self.session.node, node_ids)
+        running = set(self._startup_runs)
+        if self.startup_status is not None:
+            running.update(self.startup_status.running())
+        stopped = [
+            node_id for node_id in await abort_running(self.session.node, node_ids) if node_id in running
+        ]
         self._startup_runs.difference_update(node_ids)
         if stopped:
             _logger.warning("%s: startup aid aborted on %s", reason, stopped)

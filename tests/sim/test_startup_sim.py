@@ -23,13 +23,16 @@ OPERATOR = {"X-Cypilot-Client": "operator"}
 URL = f"/api/nodes/{DRIVE}/startup"
 
 
-async def _step(client: httpx.AsyncClient, name: str, timeout: float = 5.0) -> dict[str, Any]:
+async def _step(
+    client: httpx.AsyncClient, name: str, timeout: float = 5.0, state: str = ""
+) -> dict[str, Any]:
+    """The status once the drive is in step ``name`` (and in ``state``, if given)."""
     deadline = asyncio.get_running_loop().time() + timeout
     while True:
-        state: dict[str, Any] = (await client.get(URL)).json()
-        if state["step_name"] == name:
-            return state
-        assert asyncio.get_running_loop().time() < deadline, f"not {name}: {state}"
+        found: dict[str, Any] = (await client.get(URL)).json()
+        if found["step_name"] == name and found["state"] == (state or found["state"]):
+            return found
+        assert asyncio.get_running_loop().time() < deadline, f"not {name} {state}: {found}"
         await asyncio.sleep(0.1)
 
 
@@ -54,17 +57,25 @@ def test_phase_1_of_the_startup_aid_and_its_aborts(sim: SimInstance, dsdl: Path)
                 assert started.status_code == 200, started.text
                 assert started.json()["step_name"] == "PWM_DISABLE"
 
-                # One sample per millisecond: about a second per measuring step.
+                # One sample per millisecond: about a second per measuring step. A continue
+                # while the step measures is refused with the reason of the drive.
+                previous = "PWM_DISABLE"
                 for name in ("ADC_OFFSET_CAL", "ADC_NOISE_FLOOR", "DUTY_FORCE_LOW", "DUTY_FORCE_MID"):
-                    await client.post(URL, json={"action": "next"}, headers=OPERATOR)
+                    if name == "ADC_NOISE_FLOOR":
+                        refused = await client.post(URL, json={"action": "next"}, headers=OPERATOR)
+                        assert refused.status_code == 400 and "measuring" in refused.json()["detail"]
+                    await _step(client, previous, state="waiting")
+                    continued = await client.post(URL, json={"action": "next"}, headers=OPERATOR)
+                    assert continued.status_code == 200, continued.text
                     await _step(client, name)
+                    previous = name
                 state = (await client.get(URL)).json()
                 assert state["running"] and state["passed"]["ADC_OFFSET_CAL"]
 
                 # Stop all aborts the run (readiness SLEEP alone would not).
                 assert DRIVE in (await client.post("/api/stop")).json()["stopped"]
                 state = await _step(client, "FAULT")
-                assert not state["running"]
+                assert not state["running"] and state["state"] == "aborted"
 
                 # A run of the operator ends with its lease.
                 await client.post(URL, json={"action": "start"}, headers=OPERATOR)

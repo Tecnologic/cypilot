@@ -12,7 +12,7 @@ import logging
 import os
 import sys
 import threading
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from pathlib import Path
 from typing import Any
 
@@ -36,7 +36,7 @@ from cypilot.core.scope import TRIGGER_MODES, Capture, CaptureRequest, ScopeClie
 from cypilot.core.session import DEFAULT_LOCAL_NODE_ID, NodeSummary, Session
 from cypilot.core.signals import Recorder, SignalError, sources, subscribe
 from cypilot.core.sim_control import SimControl, SimStatus, SimulationError
-from cypilot.core.startup import CONNECT_MOTOR, StartupAid, StartupError, StartupState, abort_running
+from cypilot.core.startup import MOTOR_CONNECTED, StartupAid, StartupError, StartupState, abort_running
 from cypilot.core.transport import InterfaceError, find_adapters, parse_interfaces
 from cypilot.dsdl import DsdlError, DsdlSource, ensure_dsdl
 
@@ -634,15 +634,15 @@ def _cmd_stop(args: argparse.Namespace) -> int:
             controller = Controller(session)
             await controller.stop_all(targets)
             await controller.close()
-            # A running startup aid ignores readiness (cypilot.core.startup).
+            # A running startup aid ignores readiness (cypilot.core.startup); ABORT is a no-op elsewhere.
             aborted = await abort_running(session.node, [t.node_id for t in targets])
             return [t.node_id for t in targets], aborted
 
     stopped, aborted = asyncio.run(run())
     text = "SLEEP sent to " + (", ".join(map(str, stopped)) or "no drive")
     if aborted:
-        text += "; startup aid aborted on " + ", ".join(map(str, aborted))
-    _print(args, {"sleep_sent_to": stopped, "startup_aborted": aborted}, text)
+        text += "; startup aid ABORT sent to " + ", ".join(map(str, aborted))
+    _print(args, {"sleep_sent_to": stopped, "startup_abort_sent_to": aborted}, text)
     return 0
 
 
@@ -842,7 +842,10 @@ async def _ask(prompt: str) -> str:
 
 
 async def _startup_wizard(aid: StartupAid, step_timeout: float) -> StartupState:
-    """Runs the aid step by step at the terminal; aborts it on Ctrl+C, the end of the input or an error."""
+    """Runs the aid step by step at the terminal; aborts it on Ctrl+C, the end of the input or an error.
+
+    The status message of the drive says when a step has measured and what it waits for.
+    """
     state = await aid.state()
     if state.running:
         raise StartupError(f"the startup aid of node {aid.node_id} runs already (abort it first)")
@@ -852,21 +855,31 @@ async def _startup_wizard(aid: StartupAid, step_timeout: float) -> StartupState:
         state = await aid.start()
         while state.running:
             print(f"[{state.step_name}] {state.prompt}", file=sys.stderr)  # stdout: the result
-            if state.needs == "vdc":
-                vdc = float(await _ask("DC-link voltage of the multimeter [V]: "))
-                state = await aid.set_external(vdc=vdc)
-            elif state.needs == "current":
-                current = float(await _ask("Phase-A current of the clamp meter [A]: "))
-                state = await aid.set_external(current=current)
-            if state.step == CONNECT_MOTOR:
+            try:
+                state = await aid.wait(lambda new: not new.measuring, timeout=step_timeout)
+            except StartupError:
+                raise StartupError(
+                    f"{state.step_name} did not finish within {step_timeout} s (see the drive's log)"
+                ) from None
+            if not state.running:
+                break
+            if state.reading == "vdc":
+                state = await aid.set_reading(
+                    vdc=float(await _ask("DC-link voltage of the multimeter [V]: "))
+                )
+            elif state.reading == "current":
+                state = await aid.set_reading(
+                    current=float(await _ask("Phase-A current of the clamp meter [A]: "))
+                )
+            if state.needs == MOTOR_CONNECTED:
                 answer = await _ask("Phase 2 puts voltage on the motor. Connected, shaft free? [yes/no] ")
                 if answer.strip() != "yes":
                     raise StartupError("phase 2 not confirmed")
-                await aid.next_step(motor_connected=True)
+                before = await aid.next_step(motor_connected=True)
             else:
                 await _ask("Enter: next step (Ctrl+C aborts) ")
-                await aid.next_step()
-            state = await _next_state(aid, state.step, step_timeout)
+                before = await aid.next_step()
+            state = await aid.wait(_left(before.step))
         return state
     finally:
         if (await aid.state()).running:
@@ -874,16 +887,9 @@ async def _startup_wizard(aid: StartupAid, step_timeout: float) -> StartupState:
             print(f"startup aid of node {aid.node_id} aborted (FAULT, outputs off)", file=sys.stderr)
 
 
-async def _next_state(aid: StartupAid, step: int, timeout: float) -> StartupState:
-    """Waits until the drive leaves ``step``: the step measures before it continues."""
-    deadline = asyncio.get_running_loop().time() + timeout
-    while True:
-        state = await aid.state()
-        if state.step != step or not state.running:
-            return state
-        if asyncio.get_running_loop().time() > deadline:
-            raise StartupError(f"{state.step_name} did not finish within {timeout} s (see the drive's log)")
-        await asyncio.sleep(0.2)
+def _left(step: int) -> Callable[[StartupState], bool]:
+    """True once the drive has left ``step`` or the run has ended."""
+    return lambda state: state.step != step or not state.running
 
 
 def _cmd_startup(args: argparse.Namespace) -> int:
@@ -896,7 +902,7 @@ def _cmd_startup(args: argparse.Namespace) -> int:
                     state = await _startup_wizard(aid, args.step_timeout)
                 elif args.action == "abort":
                     await aid.abort()
-                    state = await aid.state()
+                    state = await aid.wait(lambda new: not new.running)
                 else:
                     state = await aid.state()
                 return state, await aid.calibration() if state.step_name == "DONE" else {}
@@ -905,7 +911,7 @@ def _cmd_startup(args: argparse.Namespace) -> int:
 
     state, calibration = asyncio.run(run())
     data = state.json() | {"node": args.node, "calibration": calibration}
-    text = f"{state.step_name} ({'running' if state.running else 'not running'}): {state.prompt}"
+    text = f"{state.step_name} ({state.state_name}): {state.prompt}"
     passed = [name for name, ok in data["passed"].items() if ok]
     if passed:
         text += "\npassed: " + ", ".join(passed)

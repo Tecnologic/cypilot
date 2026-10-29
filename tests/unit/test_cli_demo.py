@@ -150,7 +150,22 @@ def test_startup_run_aborts_at_the_end_of_the_input_and_without_the_motor_confir
 
 
 def test_stop_aborts_a_running_startup_aid(channel: str, capsys: pytest.CaptureFixture[str]) -> None:
-    code, _ = ctl(capsys, "-i", channel, "set", str(DEVICE_ID), "unimoc.startup.run", "1")
-    assert code == 0
+    from cypilot.core.session import Session
+    from cypilot.core.startup import StartupAid
+    from cypilot.core.transport import parse_interface
+
+    async def start() -> None:
+        # Another node-ID than the CLI's: its transfer-IDs start over and would be dropped as duplicates.
+        async with Session(parse_interface(channel), local_node_id=100) as session:
+            await session.wait_for_node(DEVICE_ID)
+            aid = StartupAid(session.node, DEVICE_ID)
+            try:
+                await aid.start()
+            finally:
+                aid.close()
+
+    asyncio.run(start())
     code, out = ctl(capsys, "-i", channel, "--json", "stop")
-    assert code == 0 and json.loads(out)["startup_aborted"] == [DEVICE_ID]
+    assert code == 0 and json.loads(out)["startup_abort_sent_to"] == [DEVICE_ID], out
+    code, out = ctl(capsys, "-i", channel, "--json", "startup", str(DEVICE_ID))
+    assert json.loads(out)["step_name"] == "FAULT" and json.loads(out)["state"] == "aborted"

@@ -34,7 +34,7 @@ DRIVE = [
     *port("pub", "telemetry", 212, "unimoc.drive.Telemetry.0.1"),
     *CYMON,
     Register("unimoc.motor.pole_pairs", RegisterValue("natural8", [15]), True, True),
-    Register("unimoc.startup.run", RegisterValue("natural8", [0]), True, False),
+    *port("pub", "commissioning", 215, "unimoc.drive.CommissioningStatus.0.1"),
 ]
 
 

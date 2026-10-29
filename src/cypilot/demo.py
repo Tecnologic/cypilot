@@ -16,7 +16,9 @@ It behaves like a small drive with cymon-lib:
   ``unimoc.settings.pending`` and the vendor status bits of the heartbeat
   (power stage enabled and engaged while engaged, E-stop latched);
 - ExecuteCommand (restart, store, emergency stop) and diagnostic records;
-- the registers of UNIMOC's startup aid ``unimoc.startup.*`` (:class:`DemoStartup`).
+- UNIMOC's startup aid: the commissioning commands, the status message
+  ``unimoc.drive.CommissioningStatus.0.1`` on subject 215 and the result
+  registers (:class:`DemoStartup`).
 
 Import only after :func:`cypilot.dsdl.ensure_dsdl`.
 """
@@ -31,6 +33,7 @@ from typing import Any
 
 import cymon as cymon_dsdl
 import pycyphal.application
+import pycyphal.dsdl
 import pycyphal.transport
 import reg.udral.service.common
 import uavcan.diagnostic
@@ -49,6 +52,7 @@ SERVICE_IDS = {
 }
 TELEMETRY_SUBJECT = 1000
 READINESS_SUBJECT = 106
+COMMISSIONING_SUBJECT = 215
 ENGAGED = 3
 
 IDLE, CONFIGURED, ARMED, TRIGGERED, COMPLETE = range(5)
@@ -174,82 +178,160 @@ class CaptureEngine:
 class DemoStartup:
     """UNIMOC's startup aid as the bus sees it, without measurements.
 
-    ``run``, ``step``, the external readings and ``results`` behave like the
-    firmware: a run starts only while not engaged, a step write answers with the
-    step and continues once the step has "measured" (:attr:`measure_time`), the
-    readings gate DC_LINK_VOLTAGE_CHECK and CURRENT_SENSE_CALIBRATION, DONE
-    writes the calibration registers, an abort in a run goes to FAULT.
+    The commissioning commands and the status message behave like the
+    firmware: a run starts only while not engaged and without a latched
+    E-stop, each step "measures" for :attr:`measure_time`, a continue is
+    refused while the step measures or waits for its reading
+    (DC_LINK_VOLTAGE_CHECK, CURRENT_SENSE_CALIBRATION) and needs
+    ``motor-connected`` at CONNECT_MOTOR, DONE writes the calibration
+    registers, an abort in a run goes to FAULT.
     """
 
     STEPS = 14
-    DONE, FAULT = 12, 13
+    DC_LINK, CONNECT_MOTOR, CURRENT_SENSE, DONE, FAULT = 7, 9, 11, 12, 13
+    IDLE_STATE, MEASURING, WAITING, NEEDS_READING, DONE_STATE, FAILED, ABORTED = range(7)
+    NEEDS_NONE, NEEDS_VDC, NEEDS_CURRENT, NEEDS_MOTOR = range(4)
+    FAULT_ABORTED, FAULT_ESTOP = 1, 2
+    START, CONTINUE, SET_READING, ABORT = 0x0200, 0x0202, 0x0203, 0x0204
     measure_time = 0.1
 
-    def __init__(self, registers: Any, engaged: Any) -> None:
+    def __init__(self, registers: Any, engaged: Any, estopped: Any) -> None:
         self._engaged = engaged
+        self._estopped = estopped
         self.running = False
+        self.started = False
         self.step = 0
-        self.passed = [False] * self.STEPS
+        self.passed = 0
+        self.fault = 0
         self.ext_current = 0.0
         self.ext_vdc = 0.0
-        self.requested = False
         self.since = 0.0
         self.calibration = {
             "adc_offset_a": 0.0,
             "adc_offset_b": 0.0,
+            "adc_offset_c": 0.0,
             "gain_a": 1.0,
             "gain_b": 1.0,
+            "gain_c": 1.0,
             "gain_vdc": 1.0,
         }
         prefix = "unimoc.startup."
-        registers[prefix + "run"] = lambda: Value(natural8=Natural8([int(self.running)])), self._set_run
-        registers[prefix + "step"] = lambda: Value(natural8=Natural8([self.step])), self._set_step
-        registers[prefix + "ext_current_A"] = (
-            lambda: Value(real32=Real32([self.ext_current])),
-            self._set_current,
+        registers[prefix + "results"] = lambda: Value(
+            natural8=Natural8([self.passed >> step & 1 for step in range(self.STEPS)])
         )
-        registers[prefix + "ext_vdc_V"] = lambda: Value(real32=Real32([self.ext_vdc])), self._set_vdc
-        registers[prefix + "results"] = lambda: Value(natural8=Natural8([int(p) for p in self.passed]))
         for name in self.calibration:
             registers[prefix + name] = lambda name=name: Value(real32=Real32([self.calibration[name]]))
 
-    def _set_run(self, value: Value) -> None:
-        if int(value.natural8.value[0]) == 0:
-            self.abort()
-        elif int(value.natural8.value[0]) == 1 and not self.running and not self._engaged():
-            self.running, self.step, self.passed = True, 1, [False] * self.STEPS
+    def handles(self, command: int) -> bool:
+        return 0x0200 <= command <= 0x0205
+
+    def command(self, command: int, parameter: str) -> tuple[int, str]:
+        """An ExecuteCommand of the commissioning interface: the status and the output text."""
+        Status = uavcan.node.ExecuteCommand_1.Response
+        if command == self.START:
+            if self._engaged():
+                return Status.STATUS_BAD_STATE, "engaged: disengage first"
+            if self._estopped():
+                return Status.STATUS_BAD_STATE, "emergency stop latched: restart first"
+            if self.running:
+                return Status.STATUS_BAD_STATE, "the startup aid runs already"
+            self.running, self.started, self.passed, self.fault = True, True, 0, 0
             self.ext_current = self.ext_vdc = 0.0
             self._enter(1)
+            return Status.STATUS_SUCCESS, "started: phase 1 without the motor"
+        if command == self.CONTINUE:
+            return self._continue(parameter)
+        if command == self.SET_READING:
+            if not self.running:
+                return Status.STATUS_BAD_STATE, "the startup aid is not running"
+            name, _, text = parameter.partition("=")
+            try:
+                value = float(text)
+            except ValueError:
+                value = math.nan
+            if not (math.isfinite(value) and 0.0 < value <= 1000.0):
+                return Status.STATUS_BAD_PARAMETER, "not a positive number"
+            if name == "vdc":
+                self.ext_vdc = value
+            elif name == "current":
+                self.ext_current = value
+            else:
+                return Status.STATUS_BAD_PARAMETER, "expected vdc=<V> or current=<A>"
+            return Status.STATUS_SUCCESS, ""
+        if command == self.ABORT:
+            self.abort()
+            return Status.STATUS_SUCCESS, ""
+        return Status.STATUS_BAD_COMMAND, "not implemented"
 
-    def _set_step(self, value: Value) -> None:
-        if self.running and int(value.natural8.value[0]) == 1:
-            self.requested = True
-
-    def _set_current(self, value: Value) -> None:
-        self.ext_current = float(value.real32.value[0])
-
-    def _set_vdc(self, value: Value) -> None:
-        self.ext_vdc = float(value.real32.value[0])
-
-    def abort(self) -> None:
-        if self.running:
-            self.running, self.step = False, self.FAULT
-
-    def _enter(self, step: int) -> None:
-        self.step, self.requested, self.since = step, False, time.monotonic()
-
-    def tick(self) -> None:
-        """Continues a requested step once it has measured and its reading is there."""
-        if not self.running or not self.requested or time.monotonic() - self.since < self.measure_time:
-            return
-        if (self.step == 7 and self.ext_vdc < 1.0) or (self.step == 11 and self.ext_current < 1e-3):
-            return  # the firmware logs a warning and waits
-        self.passed[self.step] = True
+    def _continue(self, parameter: str) -> tuple[int, str]:
+        Status = uavcan.node.ExecuteCommand_1.Response
+        if parameter not in ("", "motor-connected"):
+            return Status.STATUS_BAD_PARAMETER, "unknown confirmation"
+        if not self.running:
+            return Status.STATUS_BAD_STATE, "the startup aid is not running"
+        if not self.measured():
+            return Status.STATUS_BAD_STATE, "the step is still measuring"
+        if self.needs() in (self.NEEDS_VDC, self.NEEDS_CURRENT):
+            return Status.STATUS_BAD_STATE, "the step needs its meter reading"
+        if self.step == self.CONNECT_MOTOR and parameter != "motor-connected":
+            return Status.STATUS_BAD_PARAMETER, "confirm motor-connected"
+        if self.step != self.CONNECT_MOTOR and parameter:
+            return Status.STATUS_BAD_PARAMETER, "this step takes no confirmation"
+        self.passed |= 1 << self.step
         if self.step + 1 >= self.DONE:
             self.calibration.update(adc_offset_a=0.01, adc_offset_b=-0.01, gain_a=1.02, gain_b=0.98)
             self.running, self.step = False, self.DONE
-            return
-        self._enter(self.step + 1)
+        else:
+            self._enter(self.step + 1)
+        return Status.STATUS_SUCCESS, ""
+
+    def abort(self, fault: int = FAULT_ABORTED) -> None:
+        if self.running:
+            self.running, self.step, self.fault = False, self.FAULT, fault
+
+    def _enter(self, step: int) -> None:
+        self.step, self.since = step, time.monotonic()
+
+    def measured(self) -> bool:
+        return self.step == self.CONNECT_MOTOR or time.monotonic() - self.since >= self.measure_time
+
+    def needs(self) -> int:
+        if not self.running or not self.measured():
+            return self.NEEDS_NONE
+        if self.step == self.DC_LINK and self.ext_vdc < 1.0:
+            return self.NEEDS_VDC
+        if self.step == self.CURRENT_SENSE and self.ext_current < 1e-3:
+            return self.NEEDS_CURRENT
+        return self.NEEDS_MOTOR if self.step == self.CONNECT_MOTOR else self.NEEDS_NONE
+
+    def status(self) -> Any:
+        """The status message ``unimoc.drive.CommissioningStatus.0.1``."""
+        import unimoc.drive
+
+        if self.running:
+            needs = self.needs()
+            if needs in (self.NEEDS_VDC, self.NEEDS_CURRENT):
+                state = self.NEEDS_READING
+            else:
+                state = self.WAITING if self.measured() else self.MEASURING
+        elif self.step == self.DONE:
+            state = self.DONE_STATE
+        elif self.step == self.FAULT:
+            state = self.ABORTED if self.fault in (self.FAULT_ABORTED, self.FAULT_ESTOP) else self.FAILED
+        else:
+            state = self.IDLE_STATE
+        progress = 100 if self.measured() else int(100 * (time.monotonic() - self.since) / self.measure_time)
+        return unimoc.drive.CommissioningStatus_0_1(
+            procedure=1 if self.started else 0,
+            step=self.step,
+            state=state,
+            needs=self.needs(),
+            progress=progress if self.running else 0,
+            passed=self.passed,
+            failed=0,
+            fault=self.fault,
+            counter=0,
+        )
 
 
 class DemoDevice:
@@ -264,6 +346,7 @@ class DemoDevice:
         env = {f"UAVCAN__SRV__{k.upper()}__ID": str(v) for k, v in SERVICE_IDS.items()}
         env["UAVCAN__PUB__TELEMETRY__ID"] = str(TELEMETRY_SUBJECT)
         env["UAVCAN__SUB__READINESS__ID"] = str(READINESS_SUBJECT)
+        env["UAVCAN__PUB__COMMISSIONING__ID"] = str(COMMISSIONING_SUBJECT)
         registry = pycyphal.application.make_registry(None, env)
         info = uavcan.node.GetInfo_1.Response(
             protocol_version=uavcan.node.Version_1(1, 0),
@@ -287,7 +370,7 @@ class DemoDevice:
         registers["demo.engaged"] = lambda: Value(natural16=Natural16([int(self.engaged)]))
         registers["demo.store_count"] = lambda: Value(natural16=Natural16([self.store_count]))
         registers["unimoc.settings.pending"] = lambda: Value(bit=Bit([False]))
-        self.startup = DemoStartup(registers, lambda: self.engaged)
+        self.startup = DemoStartup(registers, lambda: self.engaged, lambda: self.estopped)
         for name in ("uavcan.pub.cymon_trigger", "uavcan.sub.cymon_trigger"):
             registers[f"{name}.id"] = Value(natural16=Natural16([trigger_subject]))
             registers[f"{name}.type"] = Value(string=String("cymon.TriggerEvent.0.1"))
@@ -310,6 +393,11 @@ class DemoDevice:
         self._readiness = self.node.make_subscriber(reg.udral.service.common.Readiness_0_1, "readiness")
         self._readiness.receive_in_background(self._on_readiness)
         self._log = self.node.make_publisher(uavcan.diagnostic.Record_1)
+        import unimoc.drive
+
+        self._commissioning = self.node.make_publisher(unimoc.drive.CommissioningStatus_0_1, "commissioning")
+        self._commissioning_last: Any = None
+        self._commissioning_due = 0.0
 
     def _set_amplitude(self, value: Value) -> None:
         self.amplitude = float(value.real32.value[0])
@@ -385,12 +473,23 @@ class DemoDevice:
             await asyncio.sleep(0.05)
             if self.engaged and time.monotonic() > self.readiness_deadline:
                 await self._set_engaged(False, "readiness timeout")
-            self.startup.tick()
             self._update_status()
+            await self._publish_commissioning()
             # Slow signals: the 20 Hz telemetry would alias the 50 Hz scope signal.
             w = 2 * math.pi * 0.5 * self.t
             values = [self.amplitude * math.sin(w), self.amplitude * math.cos(w), 5.0 * float(self.engaged)]
             await self._telemetry.publish(uavcan.primitive.array.Real32_1_0(values))
+
+    async def _publish_commissioning(self) -> None:
+        """On every change, at 2 Hz in a run and at 0.5 Hz otherwise, like UNIMOC."""
+        status = self.startup.status()
+        fields = pycyphal.dsdl.to_builtin(status)
+        now = time.monotonic()
+        if fields == self._commissioning_last and now < self._commissioning_due:
+            return
+        self._commissioning_last = fields
+        self._commissioning_due = now + (0.5 if self.startup.running else 2.0)
+        await self._commissioning.publish(status)
 
     def _update_status(self) -> None:
         """The UNIMOC vendor status bits: power stage (0..2), engaged (3), E-stop latched (5)."""
@@ -421,7 +520,7 @@ class DemoDevice:
         Status = uavcan.node.ExecuteCommand_1.Response
         if request.command == 65531:
             self.estopped = True
-            self.startup.abort()
+            self.startup.abort(DemoStartup.FAULT_ESTOP)
             self._update_status()
             await self._set_engaged(False, "emergency stop")
             return Status(status=Status.STATUS_SUCCESS)
@@ -435,6 +534,11 @@ class DemoDevice:
             self._update_status()
             self._apply_trigger_ports()
             return Status(status=Status.STATUS_SUCCESS)
+        if self.startup.handles(request.command):
+            status, output = self.startup.command(
+                int(request.command), request.parameter.tobytes().decode(errors="replace")
+            )
+            return Status(status=status, output=output)
         return Status(status=Status.STATUS_BAD_COMMAND)
 
     async def _on_variables(self, request: Any, _: Any) -> Any:

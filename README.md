@@ -216,7 +216,7 @@ Within that:
 - **STOP ALL (Esc)** works for every client, also without control: `SLEEP` to
   every drive, zero setpoints and the end of all publications, at once. It
   also aborts a running startup aid, which ignores readiness.
-- **Startup aid** (Control view, a UNIMOC drive with `unimoc.startup.*`): the
+- **Startup aid** (Control view, a UNIMOC drive with the commissioning status): the
   hardware bring-up of a new board, step by step (Start, Next, the multimeter
   and clamp-meter readings, Abort). It is aborted with the operator's lease,
   by STOP ALL and by the E-stop; phase 2 starts only after the confirmation

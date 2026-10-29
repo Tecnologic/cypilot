@@ -109,6 +109,7 @@ def test_a_viewer_can_stop_and_e_stop(browser: Any, page: Any, server: WebServer
 def test_plots_show_the_telemetry(page: Any) -> None:
     view(page, "plots")
     page.wait_for_selector("#plot-source option", state="attached")
+    page.select_option("#plot-source", label=page.inner_text("#plot-source option:has-text('telemetry')"))
     page.click("#add-source")
     page.wait_for_selector("#plot-main canvas")
     page.wait_for_function("() => /[1-9][0-9]* messages/.test(document.body.innerText)")

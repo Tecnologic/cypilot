@@ -41,7 +41,7 @@ from cypilot.core.runs import RunError, replay_json
 from cypilot.core.scope import CaptureRequest, ScopeError
 from cypilot.core.signals import SignalError, load_type, sources, type_name
 from cypilot.core.sim_control import SimControl, SimulationError
-from cypilot.core.startup import DONE, RUN, STEP, StartupAid, StartupError
+from cypilot.core.startup import DONE, StartupError
 from cypilot.core.subjects import jsonable
 from cypilot.core.transport import InterfaceError, find_adapters
 from cypilot.wifi import Wifi, WifiError
@@ -382,15 +382,10 @@ def create_app(hub: BusHub, *, pin: str | None = None, wifi: Wifi | None = None)
             if not current.mutable:
                 raise RegisterError(f"{name} is read-only")
             value = value_like(body.value, current.value)
-            running = name == STEP and bool((await client.read(RUN)).value.content == [1])
             result = await client.write(name, value)
         finally:
             client.close()
         accepted = result.accepted
-        if name == STEP:  # the answer is the step, not the written 1 (cypilot.core.startup)
-            accepted = running and value.content == [1]
-        if name == RUN and accepted and value.content == [1]:
-            hub.startup_started(node_id)  # aborted when the lease ends, as from the startup panel
         hub.events.emit("register", node_id=node_id, name=name, accepted=accepted)
         return {"accepted": accepted, "register": register_json(result.register)}
 
@@ -529,7 +524,7 @@ def create_app(hub: BusHub, *, pin: str | None = None, wifi: Wifi | None = None)
     @api.get("/nodes/{node_id}/startup")
     async def startup_state(node_id: int) -> dict[str, Any]:
         known(node_id)
-        aid = StartupAid(hub.require_session().node, node_id)
+        aid = hub.startup_aid(node_id)
         try:
             state = await aid.state()
             calibration = await aid.calibration() if state.step == DONE else {}
@@ -543,10 +538,10 @@ def create_app(hub: BusHub, *, pin: str | None = None, wifi: Wifi | None = None)
         if body.action != "abort":
             hub.require_operator(client_of(request))
         known(node_id)
-        aid = StartupAid(hub.require_session().node, node_id)
+        aid = hub.startup_aid(node_id)
         try:
             if body.ext_current is not None or body.ext_vdc is not None:
-                await aid.set_external(current=body.ext_current, vdc=body.ext_vdc)
+                await aid.set_reading(current=body.ext_current, vdc=body.ext_vdc)
             if body.action == "start":
                 await aid.start()
                 hub.startup_started(node_id)
@@ -559,7 +554,6 @@ def create_app(hub: BusHub, *, pin: str | None = None, wifi: Wifi | None = None)
             state = await aid.state()
         finally:
             aid.close()
-        hub.events.emit("startup", node_id=node_id, action=body.action, step=state.step_name)
         return state.json() | {"node_id": node_id}
 
     # --- Simulation ----------------------------------------------------------------
