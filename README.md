@@ -158,6 +158,9 @@ bottom bar):
   enabled without a click.
 - **Plots:** the published subjects of any nodes on one time axis, a window,
   pause, CSV export; commands, stops and register writes are markers.
+  Plots and the scope offer one Y axis or one per channel, and two cursors
+  (click the plot for A, then B) with the time difference, its frequency and
+  each channel's value at A and B.
 - **Scope:** cymon captures with trigger and pre-trigger on one node or on
   several at once: one node triggers on its condition, and the others trigger
   on its `cymon.TriggerEvent` (about 1 to 2 ms later on the bus). For that the

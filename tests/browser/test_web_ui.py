@@ -106,7 +106,7 @@ def test_a_square_wave_and_a_step_from_the_setpoint_panel(page: Any, server: Web
     )
     page.select_option("#setpoint-mode", "torque")
     page.select_option("#setpoint-signal", "square")
-    assert not page.locator("#send-setpoint").is_visible()
+    page.locator("#send-setpoint").wait_for(state="hidden")
     page.locator(".wave-low").first.fill("-1")
     page.locator(".setpoint-value").first.fill("2")
     page.fill("#wave-period", "0.4")
@@ -116,7 +116,7 @@ def test_a_square_wave_and_a_step_from_the_setpoint_panel(page: Any, server: Web
         eventually(lambda value=value: device.torque == value)
 
     page.select_option("#setpoint-signal", "step")
-    assert not page.locator("#wave-period").is_visible()
+    page.locator("#wave-period").wait_for(state="hidden")
     page.locator(".wave-low").first.fill("0")
     page.locator(".setpoint-value").first.fill("1.5")
     page.fill("#wave-delay", "0.3")
@@ -154,6 +154,24 @@ def test_plots_show_the_telemetry(page: Any) -> None:
     assert "10/telemetry value[0]" in legend and "10/telemetry value[1]" in legend
     page.click("#stop-all")  # commands become markers on the time axis
     page.wait_for_function("() => markers.some(m => m.text === 'STOP ALL' && m.at > plotEnd - 10)")
+
+    # Cursors on the scrolling plot stay at their time; own Y axes per channel.
+    over = page.locator("#plot-main .u-over")
+    box = over.bounding_box()
+    assert box is not None
+    over.click(position={"x": box["width"] * 0.5, "y": box["height"] / 2})
+    over.click(position={"x": box["width"] * 0.9, "y": box["height"] / 2})
+    readout = page.locator("#readout-main")
+    readout.wait_for()
+    dt = float(readout.locator("tbody tr").first.locator("td.num").nth(2).inner_text().split()[0])
+    assert dt > 0
+    assert readout.locator("tbody tr").count() == 1 + page.evaluate("() => plots.main.series.length - 1")
+    page.locator(".own-axes:visible").check()
+    page.wait_for_function(
+        "() => plots.main"
+        " && document.querySelectorAll('#plot-main .u-axis').length === plots.main.series.length"
+    )
+    assert page.evaluate("() => JSON.parse(localStorage.getItem('cypilot.ownAxes'))") is True
 
 
 def test_the_phone_layout_keeps_the_stops_on_screen(browser: Any, server: WebServer) -> None:

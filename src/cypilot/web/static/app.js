@@ -64,18 +64,106 @@ function drawMarkers(u) {
   ctx.restore();
 }
 
-function makePlot(el, labels, height) {
+// Two cursors per plot, A and B, at absolute x values: wall-clock seconds in the live plot (it scrolls),
+// seconds from the trigger in the scope. A click on the plot sets A, the next one B, and so on.
+const cursors = { main: { a: null, b: null, next: 'a' }, scope: { a: null, b: null, next: 'a' } };
+function cursorOffset(key) { return key === 'main' ? plotEnd : 0; }
+
+function drawCursors(u) {
+  const c = cursors[u.cursorKey];
+  if (!c) return;
+  const ctx = u.ctx;
+  const [x0, x1] = [u.scales.x.min, u.scales.x.max];
+  ctx.save();
+  ctx.strokeStyle = ctx.fillStyle = getComputedStyle(document.documentElement).getPropertyValue('--fg') || '#888';
+  ctx.font = `${11 * devicePixelRatio}px system-ui, sans-serif`;
+  ctx.lineWidth = devicePixelRatio;
+  ctx.setLineDash([4 * devicePixelRatio, 3 * devicePixelRatio]);
+  for (const [name, at] of [['A', c.a], ['B', c.b]]) {
+    if (at === null) continue;
+    const x = at - cursorOffset(u.cursorKey);
+    if (x < x0 || x > x1) continue;
+    const px = Math.round(u.valToPos(x, 'x', true));
+    ctx.beginPath();
+    ctx.moveTo(px, u.bbox.top);
+    ctx.lineTo(px, u.bbox.top + u.bbox.height);
+    ctx.stroke();
+    ctx.fillText(name, px + 3 * devicePixelRatio, u.bbox.top + u.bbox.height - 4 * devicePixelRatio);
+  }
+  ctx.restore();
+}
+
+// The value of a series at x: the nearest sample that has one (uPlot.join leaves nulls between subjects).
+function valueAt(u, series, x) {
+  const t = u.data[0];
+  const col = u.data[series];
+  if (!t.length || !col) return null;
+  let lo = 0, hi = t.length - 1;
+  while (lo < hi) { const mid = (lo + hi) >> 1; if (t[mid] < x) lo = mid + 1; else hi = mid; }
+  const i = lo > 0 && Math.abs(t[lo - 1] - x) < Math.abs(t[lo] - x) ? lo - 1 : lo;
+  for (let d = 0; d < t.length; d++) {
+    if (i - d >= 0 && col[i - d] != null) return col[i - d];
+    if (i + d < t.length && col[i + d] != null) return col[i + d];
+    if (i - d < 0 && i + d >= t.length) break;
+  }
+  return null;
+}
+
+// The cursor readout of a plot: times, their difference and every channel at A and B.
+function cursorReadout(u) {
+  const c = cursors[u.cursorKey];
+  if (!c || (c.a === null && c.b === null)) return null;
+  const off = cursorOffset(u.cursorKey);
+  const xa = c.a === null ? null : c.a - off;
+  const xb = c.b === null ? null : c.b - off;
+  const diff = (a, b) => (a === null || b === null ? null : b - a);
+  const rows = u.series.slice(1).map((s, i) => {
+    const a = xa === null ? null : valueAt(u, i + 1, xa);
+    const b = xb === null ? null : valueAt(u, i + 1, xb);
+    return { label: s.label, color: COLORS[i % COLORS.length], a, b, d: diff(a, b) };
+  });
+  const dt = diff(xa, xb);
+  return { a: xa, b: xb, dt, hz: dt ? 1 / Math.abs(dt) : null, rows };
+}
+
+function makePlot(el, labels, height, { key = null, ownAxes = false, onCursor = null } = {}) {
   const width = Math.max(280, el.clientWidth || 800);
+  const own = ownAxes && labels.length > 1;
+  const style = { stroke: '#888', grid: { stroke: 'rgba(128,128,128,.2)' }, ticks: { stroke: 'rgba(128,128,128,.3)' } };
+  const yAxes = own
+    ? labels.map((_, i) => ({
+      ...style, scale: `y${i}`, side: i % 2 ? 1 : 3, stroke: COLORS[i % COLORS.length], size: 56,
+      grid: { ...style.grid, show: i === 0 },
+    }))
+    : [style];
   const opts = {
     width, height,
     scales: { x: { time: false } },
-    series: [{ label: 't [s]' }, ...labels.map((l, i) => ({ label: l, stroke: COLORS[i % COLORS.length], width: 1.5, spanGaps: true, points: { show: false } }))],
-    axes: [0, 1].map(() => ({ stroke: '#888', grid: { stroke: 'rgba(128,128,128,.2)' }, ticks: { stroke: 'rgba(128,128,128,.3)' } })),
+    series: [{ label: 't [s]' }, ...labels.map((l, i) => ({
+      label: l, stroke: COLORS[i % COLORS.length], width: 1.5, spanGaps: true, points: { show: false },
+      scale: own ? `y${i}` : 'y',
+    }))],
+    axes: [style, ...yAxes],
     legend: { live: true },
-    hooks: { draw: [drawMarkers] },
+    hooks: { draw: [drawMarkers, drawCursors] },
   };
   el.innerHTML = '';
-  return new uPlot(opts, [[], ...labels.map(() => [])], el);
+  const u = new uPlot(opts, [[], ...labels.map(() => [])], el);
+  u.cursorKey = key;
+  if (key) {
+    // A click sets a cursor; a drag (uPlot's zoom) does not.
+    let down = null;
+    u.over.addEventListener('mousedown', (e) => { down = [e.clientX, e.clientY]; });
+    u.over.addEventListener('click', (e) => {
+      if (down && Math.hypot(e.clientX - down[0], e.clientY - down[1]) > 4) return;
+      const c = cursors[key];
+      c[c.next] = u.posToVal(e.offsetX, 'x') + cursorOffset(key);
+      c.next = c.next === 'a' ? 'b' : 'a';
+      u.redraw(false);
+      if (onCursor) onCursor(cursorReadout(u));
+    });
+  }
+  return u;
 }
 
 function download(name, text, type) {
@@ -129,6 +217,8 @@ window.cypilot = function () {
     subscriptions: [],
     windowSeconds: 10,
     plotPaused: false,
+    ownAxes: loadSaved('cypilot.ownAxes', false),
+    readout: { main: null, scope: null },
     monitorForm: { subject_id: null, type: '' },
     pubForm: { subject_id: null, type: '', rate_hz: 10, lease_s: 1, value: '{}' },
     publications: [],
@@ -602,7 +692,11 @@ window.cypilot = function () {
       if (!order.length) { if (plots.main) { plots.main.destroy(); delete plots.main; } el.innerHTML = ''; return; }
       if (!plots.main || plots.main.series.length !== order.length + 1) {
         if (plots.main) plots.main.destroy();
-        plots.main = makePlot(el, order.map(c => c.label), window.innerHeight < 700 ? 240 : 360);
+        plots.main = makePlot(el, order.map(c => c.label), window.innerHeight < 700 ? 240 : 360,
+          { key: 'main', ownAxes: this.ownAxes, onCursor: (r) => { this.readout.main = r; } });
+        plots.main.setData(data);
+        this.readout.main = cursorReadout(plots.main);
+        return;
       }
       plots.main.setData(data);
     },
@@ -744,8 +838,25 @@ window.cypilot = function () {
       const el = document.getElementById('scope-plot');
       if (!el || !this.scope.result) return;
       if (plots.scope) plots.scope.destroy();
-      plots.scope = makePlot(el, this.scopeLabels(), window.innerHeight < 700 ? 260 : 420);
+      plots.scope = makePlot(el, this.scopeLabels(), window.innerHeight < 700 ? 260 : 420,
+        { key: 'scope', ownAxes: this.ownAxes, onCursor: (r) => { this.readout.scope = r; } });
       plots.scope.setData(this.scopeData());
+      this.readout.scope = cursorReadout(plots.scope);
+    },
+    setOwnAxes(value) {
+      this.ownAxes = value;
+      save('cypilot.ownAxes', value);
+      this.rebuildPlot();
+      this.drawScope();
+    },
+    clearCursors(key) {
+      cursors[key] = { a: null, b: null, next: 'a' };
+      this.readout[key] = null;
+      plots[key]?.redraw(false);
+    },
+    fmt(v) {
+      if (v === null || v === undefined || Number.isNaN(v)) return '–';
+      return Math.abs(v) >= 1e5 || (v !== 0 && Math.abs(v) < 1e-3) ? v.toExponential(3) : String(Number(v.toPrecision(5)));
     },
     exportScope() {
       const data = this.scopeData();

@@ -298,7 +298,24 @@
     <span class="hint" x-show="!plotSources.length">The node publishes no subject with a type register.</span>
   </div>
   <div class="card"><div id="plot-main" class="plot"></div>
-    <p class="hint" x-show="!channels.length">Add a subject and choose its fields.</p></div>
+    <p class="hint" x-show="!channels.length">Add a subject and choose its fields.</p>
+  <div class="row plot-tools">
+    <label class="inline"><input type="checkbox" class="own-axes" :checked="ownAxes" @change="setOwnAxes($event.target.checked)"> own Y axis per channel</label>
+    <span class="hint">Click the plot to set cursor A, then B.</span>
+    <button class="small" @click="clearCursors('main')" :disabled="!readout.main">Clear cursors</button>
+  </div>
+  <table class="readout" id="readout-main" x-show="readout.main">
+    <thead><tr><th></th><th>A</th><th>B</th><th>B − A</th></tr></thead>
+    <tbody>
+      <tr><td>t [s]</td><td class="num" x-text="fmt(readout.main?.a)"></td><td class="num" x-text="fmt(readout.main?.b)"></td>
+        <td class="num"><span x-text="fmt(readout.main?.dt)"></span><span class="hint" x-show="readout.main?.hz" x-text="` (${fmt(readout.main?.hz)} Hz)`"></span></td></tr>
+      <template x-for="r in readout.main?.rows ?? []" :key="r.label">
+        <tr><td><span class="swatch" :style="`background:${r.color}`"></span><span x-text="r.label"></span></td>
+          <td class="num" x-text="fmt(r.a)"></td><td class="num" x-text="fmt(r.b)"></td><td class="num" x-text="fmt(r.d)"></td></tr>
+      </template>
+    </tbody>
+  </table>
+  </div>
   <template x-for="s in subscriptions" :key="s.id">
     <div class="card">
       <div class="card-head">
@@ -374,7 +391,28 @@
       </div>
     </template>
   </section>
-  <section class="card"><div id="scope-plot" class="plot tall"></div></section>
+  <section class="card"><div id="scope-plot" class="plot tall"></div>
+    <template x-if="scope.result">
+      <div>
+  <div class="row plot-tools">
+    <label class="inline"><input type="checkbox" class="own-axes" :checked="ownAxes" @change="setOwnAxes($event.target.checked)"> own Y axis per channel</label>
+    <span class="hint">Click the plot to set cursor A, then B.</span>
+    <button class="small" @click="clearCursors('scope')" :disabled="!readout.scope">Clear cursors</button>
+  </div>
+  <table class="readout" id="readout-scope" x-show="readout.scope">
+    <thead><tr><th></th><th>A</th><th>B</th><th>B − A</th></tr></thead>
+    <tbody>
+      <tr><td>t [s]</td><td class="num" x-text="fmt(readout.scope?.a)"></td><td class="num" x-text="fmt(readout.scope?.b)"></td>
+        <td class="num"><span x-text="fmt(readout.scope?.dt)"></span><span class="hint" x-show="readout.scope?.hz" x-text="` (${fmt(readout.scope?.hz)} Hz)`"></span></td></tr>
+      <template x-for="r in readout.scope?.rows ?? []" :key="r.label">
+        <tr><td><span class="swatch" :style="`background:${r.color}`"></span><span x-text="r.label"></span></td>
+          <td class="num" x-text="fmt(r.a)"></td><td class="num" x-text="fmt(r.b)"></td><td class="num" x-text="fmt(r.d)"></td></tr>
+      </template>
+    </tbody>
+  </table>
+      </div>
+    </template>
+  </section>
 </main>
 
 <!-- ───────────── Simulation ───────────── -->

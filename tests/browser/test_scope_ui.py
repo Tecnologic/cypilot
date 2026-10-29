@@ -48,4 +48,28 @@ def test_two_nodes_on_one_trigger(browser: Any, dsdl: Path) -> None:
             raise AssertionError(f"no capture: state {state!r}, message {toast!r}") from None
         legend = page.inner_text("#scope-plot .u-legend")
         assert "10 sine [A]" in legend and "11 cosine [A]" in legend
+
+        # Cursors: a click sets A, the next B; the readout shows the times and each channel there.
+        over = page.locator("#scope-plot .u-over")
+        box = over.bounding_box()
+        assert box is not None
+        over.click(position={"x": box["width"] * 0.25, "y": box["height"] / 2})
+        over.click(position={"x": box["width"] * 0.75, "y": box["height"] / 2})
+        readout = page.locator("#readout-scope")
+        readout.wait_for()
+        rows = readout.locator("tbody tr")
+        assert rows.count() == 3  # t and the two channels
+        a, b, dt = (float(rows.nth(0).locator("td.num").nth(i).inner_text().split()[0]) for i in range(3))
+        assert b > a and dt == pytest.approx(b - a, rel=1e-3)
+        expected = page.evaluate(
+            "() => { const u = plots.scope; const x = cursors.scope.a; return valueAt(u, 1, x); }"
+        )
+        assert float(rows.nth(1).locator("td.num").first.inner_text()) == pytest.approx(expected, rel=1e-3)
+        assert page.locator("#scope-plot .u-axis").count() == 2  # one x, one y
+
+        page.locator(".own-axes:visible").check()
+        page.wait_for_function("() => document.querySelectorAll('#scope-plot .u-axis').length === 3")
+        assert readout.is_visible()  # the cursors stay over the redraw
+        page.locator("button:visible", has_text="Clear cursors").click()
+        readout.wait_for(state="hidden")
         page.close()
