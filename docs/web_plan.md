@@ -140,6 +140,9 @@ the same rules hold, moved to the server:
   drives within the lease time: the server publishes SLEEP, ramps the
   setpoints to zero and drops the lease. This replaces the Qt UI watchdog;
   `core.control`'s watchdog is fed by the lease instead of a Qt timer.
+- **The startup aid** of a drive (plan section 7.7) owns its outputs without
+  readiness: the server aborts the operator's runs when the lease lapses, is
+  released or the operator leaves, and stop all aborts it on every drive.
 - **Wi-Fi jitter** can drop a lease that was fine. That is the safe side; the
   UI shows "lease lost" and needs a new Enable. The lease time is a trade-off
   the run log records.

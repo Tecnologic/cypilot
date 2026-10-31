@@ -15,7 +15,7 @@ changes.
   (`status.py`), capabilities and ports from discovery (`capabilities.py`),
   settings profiles (`profiles.py`), enabling, setpoints, stop all, the
   watchdog and recovery (`control.py`), the simulation controls
-  (`sim_control.py`), subjects as channels with the recorder, export and
+  (`sim_control.py`), UNIMOC's hardware startup aid (`startup.py`) and homing (`homing.py`), subjects as channels with the recorder, export and
   replay (`signals.py`), and from the cymon tool: the CANable FD bus
   (`canable.py`), the event hub (`events.py`), monitoring any subject and
   publications with a lease (`subjects.py`), cymon captures (`scope.py`),

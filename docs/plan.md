@@ -169,6 +169,7 @@ one whose uptime went backwards (restart), the core runs:
 | Cart drive | `uavcan.sub.wheel_command.id`, publishes `unimoc.cart.DriveStatus` | Wheel index, cart status, limp-home display |
 | Scope | the five `uavcan.srv.cymon_*.id` registers enabled and served | Scope, multi-node capture |
 | Simulation | registers `unimoc.sim.*` | Pause, advance, reset, virtual clock |
+| Startup aid | register `uavcan.pub.commissioning.id` | Hardware bring-up panel (section 7.7) |
 | Local control (e-bike, PR #29) | vendor status bit 7 (section 6) | No engage button: the drive engages by itself; STANDBY and SLEEP stay |
 | VDC, BMS | publishes `unimoc.cart.WheelCommand` or `unimoc.cart.BatteryStatus` | Cart overview, battery panel (when these nodes exist) |
 | Log | publishes `uavcan.diagnostic.Record` | Log view with node filter |
@@ -313,7 +314,7 @@ their own timeout. Closing the GUI or losing the adapter has the same effect.
 |---|---|
 | Enable (selected drives or all) | Checks the preconditions (not blocked, nothing latched, no local control, no foreign publisher, setpoint zero), then publishes `ENGAGED` on each drive's subject and keeps it alive; shows the engaged bit coming back from each drive, or a timeout with the reason |
 | Disable | Ramps the setpoint to zero (configurable ramp), then publishes `STANDBY` for a second, then stops publishing |
-| Stop all (Esc key, always visible) | Publishes `SLEEP` on every readiness subject it knows and zero setpoints, at once, no ramp |
+| Stop all (Esc key, always visible) | Publishes `SLEEP` on every readiness subject it knows and zero setpoints, at once, no ramp; aborts a running startup aid on every UNIMOC drive (it ignores readiness, section 7.7) |
 | Emergency stop (button with confirmation, or Shift+Esc) | `ExecuteCommand EMERGENCY_STOP` (65531) to every node that serves it; latched until a restart |
 
 ### 7.4 Setpoints
@@ -323,6 +324,24 @@ torque, speed, position, UDRAL servo). Inputs: number field, slider with
 limits from the node's registers (`unimoc.motor.limits.i_max`, the speed range),
 a ramp, and a step or a square wave of chosen amplitude and period for
 tuning. The setpoint goes to zero on disable and on stop.
+
+Homing (UNIMOC, the drive has `uavcan.pub.homing_state.id`): in position
+mode the panel has **Home**, enabled while the drive is engaged. It sends
+`ExecuteCommand START_HOMING` (`0x0400`); the drive runs against its stop,
+takes the stop as position 0 and holds it until the setpoint changes. The
+answer says at once whether the run started (with the drive's reason, e.g.
+"engage in position control first"); the state chip follows the homing
+state subject (`uavcan.primitive.scalar.Natural8.1.0`: searching, done,
+fault). The lease keeps the drive engaged; the sleep at the end of the lease
+ends a run (fault). CLI: `cypilot-ctl run N --home [--position RAD]`. Homing and
+RESET_TIMING come with the same UNIMOC release as the startup aid's
+commands (section 7.7), v0.4.0; a drive of v0.3.0 has no homing state and
+shows no Home.
+
+One-shot actions of the drive are commands, not register writes: UNIMOC's
+`RESET_TIMING` (`0x0300`) is `cypilot-ctl command N reset-timing`. Enabling
+stays on the readiness subject (section 7.1): it must be refreshed, so a lost
+cypilot disengages the drive; a command would stay in force.
 
 Cart: a "cart" panel publishes `unimoc.cart.WheelCommand` with one torque per
 wheel (or one for all) and `unimoc.cart.PedalState` for limp-home tests, only
@@ -351,6 +370,69 @@ reset, the virtual cycle count and period, and the simulation settings
 (load torque, DC-link voltage) as a panel. Several simulated nodes are paused
 and advanced together (one after the other; the cluster has no shared clock
 yet, `TODO.md`, SIL P2).
+
+### 7.7 Startup aid
+
+UNIMOC's hardware startup aid (`HwStartup`, README "Hardware Bring-Up Guide"
+there) commissions a new board in steps: phase 1 without the motor (current
+sense offsets and noise, forced duties for the scope, the DC link against a
+multimeter, the gate driver), the CONNECT_MOTOR barrier, phase 2 with the
+motor (ADC trigger sweep, current-sense gain against a clamp meter), DONE.
+The drive applies the calibration at DONE; the Store command keeps it.
+
+The bus contract is UNIMOC's commissioning interface (its
+`docs/motor_identification_plan.md`, section 5.4): the actions are
+ExecuteCommand codes (START_STARTUP_AID 0x0200, CONTINUE 0x0202, SET_READING
+0x0203, ABORT 0x0204) whose answer says at once whether the drive took them,
+with its reason in the output text; the progress is the status message
+`unimoc.drive.CommissioningStatus.0.1` on the subject of
+`uavcan.pub.commissioning.id`, published on every change, at 2 Hz in a run
+and 0.5 Hz otherwise; the calibration stays registers. cypilot follows the
+status by subscription (`StatusWatch`, one per hub) instead of polling, and
+the hub sends each change to the clients as a `startup` event. The contract
+came with UNIMOC v0.4.0 (`DEFAULT_UNIMOC_REF`); a drive of v0.3.0 shows no
+startup panel.
+
+The Control view has a panel for it when the node has
+`uavcan.pub.commissioning.id` (`core/startup.py`, `/api/nodes/{id}/startup`):
+the step, its state (measuring with its progress, waiting, needs a reading,
+done, failed, aborted), what to do in it, fields for the two meter readings in
+the steps that need them, Start, Next and Abort, the passed and failed steps
+and, at DONE, the calibration. The drive never advances by itself; Next is
+off while a step measures, and the drive refuses a continue then or before
+its reading.
+
+Safety: while it runs the aid releases the power stage itself, without
+readiness, so SLEEP does not stop it. cypilot aborts it (ABORT) on stop
+all (every UNIMOC drive; a drive of UNIMOC up to v0.3.0 gets `unimoc.startup.run`
+= 0), when the operator's lease lapses, is released or its
+client leaves, and on a disconnect; the E-stop aborts it in the drive. Start
+asks to disconnect the motor, and Next out of CONNECT_MOTOR into phase 2
+needs the confirmation that the motor is connected: CONTINUE takes
+`motor-connected` there and the drive refuses it without, so a second click
+cannot cross the barrier. The abort is open to every client.
+
+`cypilot-ctl startup NODE run` is the same flow at the terminal: it asks for
+the readings and the confirmations, waits for each step to measure, and
+aborts the run on Ctrl+C, the end of the input or an error (there is no lease:
+a killed process leaves the run to the E-stop). `cypilot-ctl stop` aborts it
+like stop all.
+
+### 7.8 Motor identification (planned)
+
+The motor parameters (R, L_d, L_q, flux, pole-pair check, Hall offset,
+inertia and friction, the derived loop gains) get a second assisted flow
+after the startup aid, planned in UNIMOC (`docs/motor_identification_plan.md`
+there, sections 5.4 and 6): a "Motor identification" card that sends the
+actions as ExecuteCommand (with the refusal reasons), follows progress and
+completion on the drive's status message `unimoc.drive.CommissioningStatus`
+instead of polling, and reviews the result registers `unimoc.identify.result.*`;
+the same safety rules as the startup aid (lease,
+stop all, E-stop, abort open to all), a confirmation before the first
+rotation, the pole pairs measured or entered and checked, the results
+reviewed, compared and approved by the operator before Apply and Store, and the result saved as the profile of the motor type for the
+other drives. `cypilot-ctl identify` is the same at the terminal. cypilot
+follows the UNIMOC release that brings the registers.
 
 ## 8. Signals, plots, scope
 

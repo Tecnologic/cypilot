@@ -35,12 +35,15 @@ from starlette.websockets import WebSocketDisconnect
 
 from cypilot import __version__
 from cypilot.core.control import ControlError, SetpointMode, find_target, recover
+from cypilot.core.homing import HomingError
 from cypilot.core.hub import BusConfig, BusHub, NotConnected, NotOperator
 from cypilot.core.registers import Register, RegisterError, RegisterValue, parse_like
 from cypilot.core.runs import RunError, replay_json
 from cypilot.core.scope import CaptureRequest, ScopeError
+from cypilot.core.session import call_command
 from cypilot.core.signals import SignalError, load_type, sources, type_name
 from cypilot.core.sim_control import SimControl, SimulationError
+from cypilot.core.startup import DONE, StartupError
 from cypilot.core.subjects import jsonable
 from cypilot.core.transport import InterfaceError, find_adapters
 from cypilot.wifi import Wifi, WifiError
@@ -55,8 +58,10 @@ COMMANDS = {
     "factory-reset": 65532,
     "emergency-stop": 65531,
     "store": 65530,
+    "reset-timing": 0x0300,
 }
-"""Standard ``uavcan.node.ExecuteCommand`` codes by name (as ``cypilot-ctl command``)."""
+"""``uavcan.node.ExecuteCommand`` codes by name (as ``cypilot-ctl command``): the standard ones
+and UNIMOC's RESET_TIMING (vendor code; homing has its own endpoint)."""
 COMMAND_STATUS = {
     0: "success",
     1: "failure",
@@ -109,6 +114,17 @@ class SetpointRequest(BaseModel):
 class RecoverRequest(BaseModel):
     restart: bool = False
     """Allow the restart that a latched emergency stop needs."""
+
+
+class StartupRequest(BaseModel):
+    action: str
+    """``start``, ``next``, ``abort`` or ``external`` (only the readings)."""
+    ext_current: float | None = Field(None, gt=0.0, le=1000.0)
+    """The clamp-meter reading of CURRENT_SENSE_CALIBRATION [A]."""
+    ext_vdc: float | None = Field(None, gt=0.0, le=1000.0)
+    """The multimeter reading of DC_LINK_VOLTAGE_CHECK [V]."""
+    motor_connected: bool = False
+    """The confirmation that continues from CONNECT_MOTOR into phase 2."""
 
 
 class SimRequest(BaseModel):
@@ -272,6 +288,8 @@ def create_app(hub: BusHub, *, pin: str | None = None, wifi: Wifi | None = None)
     @app.exception_handler(ScopeError)
     @app.exception_handler(SignalError)
     @app.exception_handler(SimulationError)
+    @app.exception_handler(StartupError)
+    @app.exception_handler(HomingError)
     @app.exception_handler(InterfaceError)
     @app.exception_handler(ValueError)
     @app.exception_handler(LookupError)
@@ -368,11 +386,13 @@ def create_app(hub: BusHub, *, pin: str | None = None, wifi: Wifi | None = None)
                 raise HTTPException(404, f"node {node_id} has no register {name}")
             if not current.mutable:
                 raise RegisterError(f"{name} is read-only")
-            result = await client.write(name, value_like(body.value, current.value))
+            value = value_like(body.value, current.value)
+            result = await client.write(name, value)
         finally:
             client.close()
-        hub.events.emit("register", node_id=node_id, name=name, accepted=result.accepted)
-        return {"accepted": result.accepted, "register": register_json(result.register)}
+        accepted = result.accepted
+        hub.events.emit("register", node_id=node_id, name=name, accepted=accepted)
+        return {"accepted": accepted, "register": register_json(result.register)}
 
     @api.get("/nodes/{node_id}/ports")
     async def node_ports(node_id: int) -> list[dict[str, Any]]:
@@ -411,10 +431,10 @@ def create_app(hub: BusHub, *, pin: str | None = None, wifi: Wifi | None = None)
         if code != COMMANDS["emergency-stop"]:  # stopping is never locked
             hub.require_operator(client_of(request))
         known(node_id)
-        result = await hub.require_session().execute_command(node_id, code, body.parameter)
+        result, output = await call_command(hub.require_session().node, node_id, code, body.parameter, 2.0)
         status_text = COMMAND_STATUS.get(result, str(result))
         hub.events.emit("command", node_id=node_id, command=code, status=status_text)
-        return {"command": code, "status": status_text, "ok": result == 0}
+        return {"command": code, "status": status_text, "ok": result == 0, "output": output}
 
     descriptions: dict[str, Any] = {}
 
@@ -458,6 +478,7 @@ def create_app(hub: BusHub, *, pin: str | None = None, wifi: Wifi | None = None)
                 mode.name.lower(): {"subject": subject, "components": mode.components}
                 for mode, subject in target.setpoints.items()
             },
+            "homing": target.homing,
         }
 
     @api.post("/nodes/{node_id}/enable")
@@ -485,6 +506,21 @@ def create_app(hub: BusHub, *, pin: str | None = None, wifi: Wifi | None = None)
         controller.set_setpoint(target, mode, body.values, ramp=body.ramp)
         return {"node_id": node_id, "mode": mode.name.lower(), "values": body.values}
 
+    @api.get("/nodes/{node_id}/homing")
+    async def homing_state(node_id: int) -> dict[str, Any]:
+        """The latest homing state seen (``null`` before a run from here)."""
+        known(node_id)
+        state = hub.homing_state(node_id)
+        return {"node_id": node_id, "state": state.name if state is not None else None}
+
+    @api.post("/nodes/{node_id}/homing")
+    async def start_homing(node_id: int, request: Request) -> dict[str, Any]:
+        """START_HOMING: the drive must be engaged in position control (the drive says why not)."""
+        hub.require_operator(client_of(request))
+        known(node_id)
+        state = await hub.start_homing(node_id)
+        return {"node_id": node_id, "state": state.name}
+
     @api.post("/nodes/{node_id}/recover")
     async def recover_node(
         node_id: int, request: Request, body: RecoverRequest | None = None
@@ -503,6 +539,43 @@ def create_app(hub: BusHub, *, pin: str | None = None, wifi: Wifi | None = None)
     async def estop() -> dict[str, Any]:
         result = await hub.emergency_stop()
         return {"nodes": {str(node_id): status for node_id, status in result.items()}}
+
+    # --- Startup aid ---------------------------------------------------------------
+
+    @api.get("/nodes/{node_id}/startup")
+    async def startup_state(node_id: int) -> dict[str, Any]:
+        known(node_id)
+        aid = hub.startup_aid(node_id)
+        try:
+            state = await aid.state()
+            calibration = await aid.calibration() if state.step == DONE else {}
+        finally:
+            aid.close()
+        return state.json() | {"node_id": node_id, "calibration": calibration}
+
+    @api.post("/nodes/{node_id}/startup")
+    async def startup_action(node_id: int, body: StartupRequest, request: Request) -> dict[str, Any]:
+        """The startup aid; the operator only, but the abort (stopping is never locked)."""
+        if body.action != "abort":
+            hub.require_operator(client_of(request))
+        known(node_id)
+        aid = hub.startup_aid(node_id)
+        try:
+            if body.ext_current is not None or body.ext_vdc is not None:
+                await aid.set_reading(current=body.ext_current, vdc=body.ext_vdc)
+            if body.action == "start":
+                await aid.start()
+                hub.startup_started(node_id)
+            elif body.action == "next":
+                await aid.next_step(motor_connected=body.motor_connected)
+            elif body.action == "abort":
+                await aid.abort()
+            elif body.action != "external":
+                raise HTTPException(400, f"unknown startup action {body.action!r}")
+            state = await aid.state()
+        finally:
+            aid.close()
+        return state.json() | {"node_id": node_id}
 
     # --- Simulation ----------------------------------------------------------------
 

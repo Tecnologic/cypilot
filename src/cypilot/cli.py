@@ -11,7 +11,8 @@ import json
 import logging
 import os
 import sys
-from collections.abc import Sequence
+import threading
+from collections.abc import Callable, Sequence
 from pathlib import Path
 from typing import Any
 
@@ -29,12 +30,14 @@ from cypilot.core.control import (
     find_target,
     recover,
 )
+from cypilot.core.homing import HomingError, HomingWatch, start_homing
 from cypilot.core.profiles import Profile, ProfileError
 from cypilot.core.registers import Register, RegisterError, parse_like
 from cypilot.core.scope import TRIGGER_MODES, Capture, CaptureRequest, ScopeClient, ScopeError
-from cypilot.core.session import DEFAULT_LOCAL_NODE_ID, NodeSummary, Session
+from cypilot.core.session import DEFAULT_LOCAL_NODE_ID, NodeSummary, Session, call_command
 from cypilot.core.signals import Recorder, SignalError, sources, subscribe
 from cypilot.core.sim_control import SimControl, SimStatus, SimulationError
+from cypilot.core.startup import MOTOR_CONNECTED, StartupAid, StartupError, StartupState, abort_running
 from cypilot.core.transport import InterfaceError, find_adapters, parse_interfaces
 from cypilot.dsdl import DsdlError, DsdlSource, ensure_dsdl
 
@@ -43,8 +46,10 @@ COMMANDS = {
     "factory-reset": 65532,
     "emergency-stop": 65531,
     "store": 65530,
+    "reset-timing": 0x0300,
 }
-"""Standard ``uavcan.node.ExecuteCommand`` codes as UNIMOC uses them (UNIMOC README, "Commands")."""
+"""``uavcan.node.ExecuteCommand`` codes as UNIMOC uses them (UNIMOC README, "Commands"): the
+standard ones and the vendor RESET_TIMING; homing is ``run --home``."""
 
 COMMAND_STATUS = {
     0: "success",
@@ -73,11 +78,14 @@ def main(argv: Sequence[str] | None = None) -> int:
         ProfileError,
         ControlError,
         SimulationError,
+        StartupError,
+        HomingError,
         SignalError,
         ScopeError,
         RegisterError,
         TimeoutError,
         ValueError,
+        EOFError,
         OSError,
         pycyphal.transport.TransportError,
     ) as error:
@@ -190,6 +198,15 @@ def _parser() -> argparse.ArgumentParser:
     setpoint.add_argument("--current", type=_floats(2), metavar="I_D,I_Q", help="d/q current [A]")
     setpoint.add_argument("--torque", type=_floats(1), metavar="NM", help="torque [N m]")
     setpoint.add_argument("--speed", type=_floats(1), metavar="RAD_S", help="mechanical speed [rad/s]")
+    setpoint.add_argument(
+        "--position", type=_floats(1), metavar="RAD", help="mechanical position [rad] from home"
+    )
+    run.add_argument(
+        "--home",
+        action="store_true",
+        help="home first (UNIMOC: run against the stop, it becomes 0), then hold the --position",
+    )
+    run.add_argument("--home-timeout", type=float, default=30.0, help="seconds the homing run may take")
     run.add_argument("--for", dest="duration", type=float, default=2.0, help="seconds to hold (default 2)")
     run.add_argument("--ramp", type=float, default=0.5, help="seconds to ramp up and down (default 0.5)")
     run.set_defaults(handler=_cmd_run)
@@ -236,6 +253,17 @@ def _parser() -> argparse.ArgumentParser:
     )
     scope.add_argument("--out", type=Path, help="CSV file of the capture (time column first)")
     scope.set_defaults(handler=_cmd_scope)
+
+    startup = commands.add_parser(
+        "startup",
+        help="UNIMOC's hardware startup aid: its state, an interactive run step by step, or an abort",
+    )
+    startup.add_argument("node", type=int)
+    startup.add_argument("action", nargs="?", choices=["status", "run", "abort"], default="status")
+    startup.add_argument(
+        "--step-timeout", type=float, default=60.0, help="seconds a step may measure (default 60)"
+    )
+    startup.set_defaults(handler=_cmd_startup)
 
     sim = commands.add_parser("sim", help="pause, run, advance or reset a simulated UNIMOC drive")
     sim.add_argument("node", type=int)
@@ -403,13 +431,13 @@ def _cmd_set(args: argparse.Namespace) -> int:
 
 
 def _cmd_command(args: argparse.Namespace) -> int:
-    async def run() -> int:
+    async def run() -> tuple[int, str]:
         async with _session(args) as session:
-            return await session.execute_command(args.node, COMMANDS[args.command])
+            return await call_command(session.node, args.node, COMMANDS[args.command], "", 2.0)
 
-    status = asyncio.run(run())
-    text = COMMAND_STATUS.get(status, f"status {status}")
-    _print(args, {"command": args.command, "status": status, "text": text}, text)
+    status, output = asyncio.run(run())
+    text = COMMAND_STATUS.get(status, f"status {status}") + (f": {output}" if output else "")
+    _print(args, {"command": args.command, "status": status, "text": text, "output": output}, text)
     return 0 if status == 0 else 1
 
 
@@ -563,9 +591,12 @@ def _cmd_run(args: argparse.Namespace) -> int:
             (SetpointMode.CURRENT, args.current),
             (SetpointMode.TORQUE, args.torque),
             (SetpointMode.SPEED, args.speed),
+            (SetpointMode.POSITION, args.position),
         )
         if values is not None
     ]
+    if args.home and args.position is None:
+        chosen = [(SetpointMode.POSITION, (0.0,))]  # the run needs position control: hold the start
 
     async def run() -> dict[str, Any]:
         async with _session(args) as session:
@@ -576,6 +607,9 @@ def _cmd_run(args: argparse.Namespace) -> int:
             try:
                 await controller.engage(target)
                 await controller.wait_engaged(args.node)
+                homed = None
+                if args.home:
+                    homed = await _home(session, controller, target, args.home_timeout)
                 for mode, values in chosen:
                     controller.set_setpoint(target, mode, values, ramp=args.ramp)
                 await asyncio.sleep(args.duration)
@@ -586,6 +620,7 @@ def _cmd_run(args: argparse.Namespace) -> int:
                     "node": args.node,
                     "readiness": target.readiness,
                     "state": [c.value for c in node.chips],
+                    "homing": homed,
                 }
             finally:
                 feeder.cancel()
@@ -595,9 +630,29 @@ def _cmd_run(args: argparse.Namespace) -> int:
     _print(
         args,
         data,
-        f"node {data['node']} ran on readiness {data['readiness']}; now: {', '.join(data['state'])}",
+        ("homed; " if data["homing"] else "")
+        + f"node {data['node']} ran on readiness {data['readiness']}; now: {', '.join(data['state'])}",
     )
     return 0
+
+
+async def _home(session: Session, controller: Controller, target: DriveTarget, timeout: float) -> str:
+    """Starts the homing run in position control and waits until it ends (done or fault).
+
+    A position setpoint of 0 selects position control; the run starts two
+    keep-alive periods later and ignores the setpoint until it is done.
+    """
+    controller.set_setpoint(target, SetpointMode.POSITION, (0.0,), ramp=0.0)
+    await asyncio.sleep(0.1)
+    watch = HomingWatch(session.node)
+    try:
+        await start_homing(session.node, target.node_id, target.homing, watch)
+        state = await watch.wait(target.node_id, lambda state: not state.running, timeout=timeout)
+    finally:
+        watch.close()
+    if state.name != "done":
+        raise HomingError(f"node {target.node_id}: homing ended in {state.name}")
+    return state.name
 
 
 async def _feed(controller: Controller) -> None:
@@ -607,7 +662,7 @@ async def _feed(controller: Controller) -> None:
 
 
 def _cmd_stop(args: argparse.Namespace) -> int:
-    async def run() -> list[int]:
+    async def run() -> tuple[list[int], list[int]]:
         async with _session(args) as session:
             targets: list[DriveTarget] = []
             for node in await session.discover(args.wait):
@@ -619,10 +674,15 @@ def _cmd_stop(args: argparse.Namespace) -> int:
             controller = Controller(session)
             await controller.stop_all(targets)
             await controller.close()
-            return [t.node_id for t in targets]
+            # A running startup aid ignores readiness (cypilot.core.startup); ABORT is a no-op elsewhere.
+            aborted = await abort_running(session.node, [t.node_id for t in targets])
+            return [t.node_id for t in targets], aborted
 
-    stopped = asyncio.run(run())
-    _print(args, {"sleep_sent_to": stopped}, "SLEEP sent to " + (", ".join(map(str, stopped)) or "no drive"))
+    stopped, aborted = asyncio.run(run())
+    text = "SLEEP sent to " + (", ".join(map(str, stopped)) or "no drive")
+    if aborted:
+        text += "; startup aid ABORT sent to " + ", ".join(map(str, aborted))
+    _print(args, {"sleep_sent_to": stopped, "startup_abort_sent_to": aborted}, text)
     return 0
 
 
@@ -792,6 +852,114 @@ def _cmd_sim(args: argparse.Namespace) -> int:
     )
     _print(args, data, text)
     return 0
+
+
+async def _ask(prompt: str) -> str:
+    """A line from the terminal, without blocking the bus (EOFError at the end of the input).
+
+    A daemon thread, not the default executor: Ctrl+C must not wait for a pending ``input()``.
+    """
+    loop = asyncio.get_running_loop()
+    answer: asyncio.Future[str] = loop.create_future()
+
+    def deliver(result: str | None, error: BaseException | None) -> None:
+        if not answer.done():
+            if error is not None:
+                answer.set_exception(error)
+            else:
+                answer.set_result(result or "")
+
+    def read() -> None:
+        try:
+            line = input(prompt)
+        except (EOFError, KeyboardInterrupt) as error:
+            loop.call_soon_threadsafe(deliver, None, EOFError(str(error)))
+        else:
+            loop.call_soon_threadsafe(deliver, line, None)
+
+    threading.Thread(target=read, daemon=True).start()
+    return await answer
+
+
+async def _startup_wizard(aid: StartupAid, step_timeout: float) -> StartupState:
+    """Runs the aid step by step at the terminal; aborts it on Ctrl+C, the end of the input or an error.
+
+    The status message of the drive says when a step has measured and what it waits for.
+    """
+    state = await aid.state()
+    if state.running:
+        raise StartupError(f"the startup aid of node {aid.node_id} runs already (abort it first)")
+    if (await _ask("Phase 1 runs WITHOUT a motor: is the motor disconnected? [yes/no] ")).strip() != "yes":
+        raise StartupError("not started")
+    try:
+        state = await aid.start()
+        while state.running:
+            print(f"[{state.step_name}] {state.prompt}", file=sys.stderr)  # stdout: the result
+            try:
+                state = await aid.wait(lambda new: not new.measuring, timeout=step_timeout)
+            except StartupError:
+                raise StartupError(
+                    f"{state.step_name} did not finish within {step_timeout} s (see the drive's log)"
+                ) from None
+            if not state.running:
+                break
+            if state.reading == "vdc":
+                state = await aid.set_reading(
+                    vdc=float(await _ask("DC-link voltage of the multimeter [V]: "))
+                )
+            elif state.reading == "current":
+                state = await aid.set_reading(
+                    current=float(await _ask("Phase-A current of the clamp meter [A]: "))
+                )
+            if state.needs == MOTOR_CONNECTED:
+                answer = await _ask("Phase 2 puts voltage on the motor. Connected, shaft free? [yes/no] ")
+                if answer.strip() != "yes":
+                    raise StartupError("phase 2 not confirmed")
+                before = await aid.next_step(motor_connected=True)
+            else:
+                await _ask("Enter: next step (Ctrl+C aborts) ")
+                before = await aid.next_step()
+            state = await aid.wait(_left(before.step))
+        return state
+    finally:
+        if (await aid.state()).running:
+            await aid.abort()
+            print(f"startup aid of node {aid.node_id} aborted (FAULT, outputs off)", file=sys.stderr)
+
+
+def _left(step: int) -> Callable[[StartupState], bool]:
+    """True once the drive has left ``step`` or the run has ended."""
+    return lambda state: state.step != step or not state.running
+
+
+def _cmd_startup(args: argparse.Namespace) -> int:
+    async def run() -> tuple[StartupState, dict[str, float]]:
+        async with _session(args) as session:
+            await session.wait_for_node(args.node)
+            aid = StartupAid(session.node, args.node)
+            try:
+                if args.action == "run":
+                    state = await _startup_wizard(aid, args.step_timeout)
+                elif args.action == "abort":
+                    await aid.abort()
+                    state = await aid.wait(lambda new: not new.running)
+                else:
+                    state = await aid.state()
+                return state, await aid.calibration() if state.step_name == "DONE" else {}
+            finally:
+                aid.close()
+
+    state, calibration = asyncio.run(run())
+    data = state.json() | {"node": args.node, "calibration": calibration}
+    text = f"{state.step_name} ({state.state_name}): {state.prompt}"
+    passed = [name for name, ok in data["passed"].items() if ok]
+    if passed:
+        text += "\npassed: " + ", ".join(passed)
+    if calibration:
+        text += "\ncalibration: " + ", ".join(f"{k} = {v:.5g}" for k, v in calibration.items())
+        text += "\nstore it with: cypilot-ctl command " + str(args.node) + " store"
+    _print(args, data, text)
+    return 0 if args.action != "run" or state.step_name == "DONE" else 1
 
 
 def _cmd_dsdl(args: argparse.Namespace) -> int:

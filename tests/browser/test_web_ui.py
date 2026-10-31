@@ -109,6 +109,7 @@ def test_a_viewer_can_stop_and_e_stop(browser: Any, page: Any, server: WebServer
 def test_plots_show_the_telemetry(page: Any) -> None:
     view(page, "plots")
     page.wait_for_selector("#plot-source option", state="attached")
+    page.select_option("#plot-source", label=page.inner_text("#plot-source option:has-text('telemetry')"))
     page.click("#add-source")
     page.wait_for_selector("#plot-main canvas")
     page.wait_for_function("() => /[1-9][0-9]* messages/.test(document.body.innerText)")
@@ -145,3 +146,38 @@ def test_the_pin_login(browser: Any, dsdl: Path) -> None:
         page.wait_for_selector("#pin", state="hidden")
         page.wait_for_selector("#connect")  # not connected: the bus view
         page.close()
+
+
+def test_startup_aid_steps_with_the_readings_and_the_motor_confirmation(page: Any) -> None:
+    dialogs: list[str] = []
+    page.on("dialog", lambda dialog: (dialogs.append(dialog.message), dialog.accept()))
+    view(page, "control")
+    page.wait_for_selector("#startup-step:has-text('IDLE')")
+    assert page.locator("#startup-start").is_disabled()  # nobody has control
+    page.click("text=Take control")
+    page.click("#startup-start")
+    page.wait_for_selector("#startup-step:has-text('PWM_DISABLE')")
+    assert "WITHOUT a motor" in dialogs[-1]
+
+    def next_until(name: str) -> None:
+        page.click("#startup-next")
+        page.wait_for_selector(f"#startup-step:has-text('{name}')")
+
+    for name in ("ADC_OFFSET_CAL", "ADC_NOISE_FLOOR", "DUTY_FORCE_LOW", "DUTY_FORCE_MID", "DUTY_FORCE_HIGH"):
+        next_until(name)
+    next_until("DC_LINK_VOLTAGE_CHECK")
+    page.fill("#startup-vdc", "48")
+    next_until("GATE_DRIVER_ENABLE_CHECK")
+    next_until("CONNECT_MOTOR")
+    assert page.inner_text("#startup-next") == "Motor connected: continue"
+    next_until("PHASE_ADC_ALIGNMENT")
+    assert "voltage on the motor" in dialogs[-1]
+    next_until("CURRENT_SENSE_CALIBRATION")
+    page.fill("#startup-current", "0.85")
+    next_until("DONE")
+    page.wait_for_selector("#startup-calibration:has-text('gain_a')")
+
+    page.click("#startup-start")
+    page.wait_for_selector("#startup-step:has-text('PWM_DISABLE')")
+    page.click("#stop-all")  # aborts the aid as well
+    page.wait_for_selector("#startup-step:has-text('FAULT')")

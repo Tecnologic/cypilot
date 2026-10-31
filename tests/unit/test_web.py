@@ -176,6 +176,33 @@ def test_commands_need_the_operator_but_the_emergency_stop(dsdl: Path) -> None:
     run(body())
 
 
+def test_homing_needs_the_operator_and_tells_the_refusal(dsdl: Path) -> None:
+    async def body() -> None:
+        async with web() as (hub, client):
+            url = f"/api/nodes/{DEVICE_ID}/homing"
+            assert (await client.get(url)).json() == {"node_id": DEVICE_ID, "state": None}
+            assert (await client.post(url, headers=VIEWER)).status_code == 403
+            async with renewing(hub, "operator"):
+                await client.post("/api/control/take", headers=OPERATOR)
+                refused = await client.post(url, headers=OPERATOR)
+                assert refused.status_code == 400 and "position control" in refused.json()["detail"]
+                await client.post(f"/api/nodes/{DEVICE_ID}/enable", headers=OPERATOR)
+                started = (await client.post(url, headers=OPERATOR)).json()
+                assert started == {"node_id": DEVICE_ID, "state": "searching"}
+                await wait_for_async(lambda: _homing_done(client, url))
+                # The command endpoint returns the output text of the answer; RESET_TIMING is a name.
+                command = f"/api/nodes/{DEVICE_ID}/command"
+                reset = {"command": "reset-timing"}
+                result = (await client.post(command, json=reset, headers=OPERATOR)).json()
+                assert result == {"command": 0x0300, "status": "success", "ok": True, "output": ""}
+
+    run(body())
+
+
+async def _homing_done(client: httpx.AsyncClient, url: str) -> bool:
+    return bool((await client.get(url)).json()["state"] == "done")
+
+
 def test_pin_login(dsdl: Path) -> None:
     async def body() -> None:
         async with web(connect=False, pin="1234") as (_, client):
@@ -303,7 +330,7 @@ def test_the_drive_target(dsdl: Path) -> None:
     async def body() -> None:
         async with web() as (_, client):
             target = (await client.get(f"/api/nodes/{DEVICE_ID}/target")).json()
-            assert target == {"node_id": DEVICE_ID, "readiness": 106, "setpoints": {}}
+            assert target == {"node_id": DEVICE_ID, "readiness": 106, "setpoints": {}, "homing": 204}
 
     run(body())
 
@@ -354,3 +381,76 @@ def test_a_capture_of_two_nodes_is_stored_in_the_run(dsdl: Path, tmp_path: Path)
             await hub.close()
 
     run(body())
+
+
+async def startup_running(client: httpx.AsyncClient) -> bool:
+    return bool((await client.get(f"/api/nodes/{DEVICE_ID}/startup")).json()["running"])
+
+
+def test_the_startup_aid_needs_the_operator_and_every_stop_aborts_it(dsdl: Path) -> None:
+    async def body() -> None:
+        async with web(lease_time=0.5) as (hub, client):
+            url = f"/api/nodes/{DEVICE_ID}/startup"
+            state = (await client.get(url)).json()
+            assert state["step_name"] == "IDLE" and state["running"] is False
+            assert (await client.post(url, json={"action": "start"}, headers=VIEWER)).status_code == 403
+
+            async with renewing(hub, "operator"):
+                await client.post("/api/control/take", headers=OPERATOR)
+                state = (await client.post(url, json={"action": "start"}, headers=OPERATOR)).json()
+                assert state["running"] is True and state["step_name"] == "PWM_DISABLE"
+                assert "scope" in state["prompt"]
+                # The status message reaches the clients as events.
+                await wait_for_async(lambda: _state_is(client, "waiting"), timeout=3.0)
+                async with hub.events.listen() as events:
+                    assert (
+                        await client.post(url, json={"action": "next"}, headers=OPERATOR)
+                    ).status_code == 200
+                    await wait_for_async(lambda: _step_is(client, "ADC_OFFSET_CAL"), timeout=3.0)
+                    seen = [events.get_nowait() for _ in range(events.qsize())]
+                assert any(
+                    event["kind"] == "startup" and event["state"]["step_name"] == "ADC_OFFSET_CAL"
+                    for event in seen
+                )
+                # A continue while the step measures: refused, with the drive's reason.
+                hub._devices[0].startup.measure_time = 1.0
+                refused = await client.post(url, json={"action": "next"}, headers=OPERATOR)
+                assert refused.status_code == 400 and "measuring" in refused.json()["detail"]
+                await wait_for_async(lambda: _state_is(client, "waiting"), timeout=3.0)
+                # Readiness SLEEP does not stop it; stop all (any client) aborts it.
+                assert DEVICE_ID in (await client.post("/api/stop", headers=VIEWER)).json()["stopped"]
+                await wait_for_async(lambda: _step_is(client, "FAULT"), timeout=3.0)
+                assert not await startup_running(client)
+
+                # The abort is open to every client.
+                await client.post(url, json={"action": "start"}, headers=OPERATOR)
+                assert (await client.post(url, json={"action": "abort"}, headers=VIEWER)).json()[
+                    "step_name"
+                ] == "FAULT"
+
+                await client.post(url, json={"action": "start"}, headers=OPERATOR)
+                assert await startup_running(client)
+            # The renewals stop: the lease lapses and the run is aborted.
+            await wait_for_async(lambda: _not(startup_running(client)), timeout=3.0)
+            assert (await client.get(url)).json()["step_name"] == "FAULT"
+
+            # Released control: aborted too.
+            async with renewing(hub, "operator"):
+                await client.post("/api/control/take", headers=OPERATOR)
+                await client.post(url, json={"action": "start"}, headers=OPERATOR)
+                await client.post("/api/control/release", headers=OPERATOR)
+                await wait_for_async(lambda: _not(startup_running(client)), timeout=3.0)
+
+    run(body())
+
+
+async def _step_is(client: httpx.AsyncClient, name: str) -> bool:
+    return bool((await client.get(f"/api/nodes/{DEVICE_ID}/startup")).json()["step_name"] == name)
+
+
+async def _state_is(client: httpx.AsyncClient, name: str) -> bool:
+    return bool((await client.get(f"/api/nodes/{DEVICE_ID}/startup")).json()["state"] == name)
+
+
+async def _not(awaitable: Any) -> bool:
+    return not await awaitable
