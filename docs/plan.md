@@ -335,8 +335,8 @@ state subject (`uavcan.primitive.scalar.Natural8.1.0`: searching, done,
 fault). The lease keeps the drive engaged; the sleep at the end of the lease
 ends a run (fault). CLI: `cypilot-ctl run N --home [--position RAD]`. Homing and
 RESET_TIMING come with the same UNIMOC release as the startup aid's
-commands (section 7.7); a drive of v0.3.0 has no homing state and shows no
-Home.
+commands (section 7.7), v0.4.0; a drive of v0.3.0 has no homing state and
+shows no Home.
 
 One-shot actions of the drive are commands, not register writes: UNIMOC's
 `RESET_TIMING` (`0x0300`) is `cypilot-ctl command N reset-timing`. Enabling
@@ -390,10 +390,8 @@ with its reason in the output text; the progress is the status message
 and 0.5 Hz otherwise; the calibration stays registers. cypilot follows the
 status by subscription (`StatusWatch`, one per hub) instead of polling, and
 the hub sends each change to the clients as a `startup` event. The contract
-comes with the UNIMOC release after v0.3.0: until `DEFAULT_UNIMOC_REF` is
-bumped to it, the DSDL and the simulation must come from a local UNIMOC
-checkout (`CYPILOT_UNIMOC`, `CYPILOT_SIM_EXE`), and a drive of v0.3.0 shows
-no startup panel.
+came with UNIMOC v0.4.0 (`DEFAULT_UNIMOC_REF`); a drive of v0.3.0 shows no
+startup panel.
 
 The Control view has a panel for it when the node has
 `uavcan.pub.commissioning.id` (`core/startup.py`, `/api/nodes/{id}/startup`):

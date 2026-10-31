@@ -46,7 +46,7 @@ use another UNIMOC version, set `CYPILOT_UNIMOC` to a git ref of the UNIMOC
 repository, or to the path of a local `unimoc` checkout in its west workspace:
 
 ```sh
-export CYPILOT_UNIMOC=v0.3.0                      # a UNIMOC release (default)
+export CYPILOT_UNIMOC=v0.4.0                      # a UNIMOC release (default)
 export CYPILOT_DSDL=~/vdc/dsdl/vdc                # extra root namespaces of other projects (os.pathsep list)
 export CYPILOT_UNIMOC=~/unimoc-ws/unimoc          # a local west workspace
 cypilot-ctl dsdl                                  # fetch and compile now
