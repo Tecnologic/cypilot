@@ -87,7 +87,9 @@ def test_home_a_drive_in_position_control(browser: Any, sim: SimInstance) -> Non
             page.click("nav.views button[data-view='control']")
             page.wait_for_selector("text=readiness subject 1034")
             page.select_option("#setpoint-mode", "position")
-            assert page.is_visible("#home") and page.is_disabled("#home")  # needs the enabled drive
+            # Waits: Alpine shows Home after the mode change re-renders, not within select_option.
+            page.wait_for_selector("#home", state="visible")
+            assert page.is_disabled("#home")  # needs the enabled drive
 
             page.click("#enable")
             engaged(page, True)
