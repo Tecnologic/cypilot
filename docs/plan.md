@@ -434,6 +434,104 @@ reviewed, compared and approved by the operator before Apply and Store, and the 
 other drives. `cypilot-ctl identify` is the same at the terminal. cypilot
 follows the UNIMOC release that brings the registers.
 
+### 7.9 Motor temperature and heat run (planned)
+
+UNIMOC estimates the winding temperature of each drive (its
+`docs/motor_thermal_plan.md`): a two-mass thermal model heated by the copper
+losses, corrected at low speed by the stator resistance R_s the observer
+measures, and by a motor temperature sensor where the board has one. The
+estimate derates the motor current between `unimoc.motor.thermal.derate_start`
+and `.limit`. Its quality rests on two things the operator sets up on the
+bench: the dead-time compensation (the R_s estimate is exactly as good as it)
+and the four thermal parameters of the motor (a heat run). cypilot gets a
+card for both, "Motor temperature", on the Control view of a node that has
+the register `unimoc.motor.temperature.winding` (discovery by register, no
+node type).
+
+**What the firmware offers** (UNIMOC, the release after v0.4.0):
+
+| Item | Content |
+|---|---|
+| Settings | `unimoc.motor.thermal.*` (ambient, `C_winding`, `C_stator`, `R_winding`, `R_stator`, `derate_start`, `limit`, `rs_speed_max`, `rs_current_min`, `rs_correction_time`, `sensor_correction_time`), `unimoc.motor.stator.R_temperature` |
+| State, read-only | `unimoc.motor.temperature.winding`, `.stator` [degC] (the model), `.rs` [degC] (the last R_s window; NaN: none), `.current` [A RMS of the last 0.1 s] |
+| Traces (cymon) | IDs 12 to 15: `winding_temperature`, `stator_temperature`, `rs_estimate`, `rs_temperature` |
+| `unimoc.cart.DriveStatus.0.2` | `thermally_derated`; `motor_temperature` is the sensor, else the estimate; `dc_link_current` with the copper losses |
+| Simulation | `unimoc.sim.motor_heating`, `unimoc.sim.motor_temperature` (truth, writable for a warm start), `unimoc.sim.motor_sensor` |
+| Identification M1 | `unimoc.identify.result.R` and `.dead_time` (for `unimoc.control.dtc.dead_time`) |
+
+**Status and plots.** A chip **Thermally derated** from `DriveStatus`
+(section 6), and in the node row the motor temperature with its source
+(sensor or estimate: estimate when `DriveStatus.motor_temperature` equals
+`unimoc.motor.temperature.winding`). The card shows the winding, stator and
+R_s temperatures and the current, polled at 1 Hz while the node is selected,
+against the derate band; the four values are channels of the recorder
+(section 8.1) like the subjects.
+
+**R_s check (the dead-time compensation).** An assisted flow, after M1
+(section 7.8) and before any heat run:
+
+1. Preconditions, each confirmed: the motor is cold (at the room temperature,
+   entered or taken from `.ambient`), the rotor is locked or turns slowly
+   (below `rs_speed_max`), `unimoc.control.dtc.dead_time` holds the result of
+   M1, `R_temperature` the temperature of that M1 run.
+2. With the lease (section 7.2) the drive is engaged in current mode and holds
+   two currents, about 30 % and 60 % of `unimoc.motor.limits.i_max`, for 5 s
+   each; cypilot reads `unimoc.motor.temperature.rs` at the end of each.
+3. Verdict: both within 5 K of the room temperature: **compensation good**.
+   Otherwise the apparent resistance R_k = R + V/i_k of the two currents gives
+   the residual inverter voltage V = (R_1 - R_2) / (1/i_1 - 1/i_2) and the
+   resistance R = R_1 - V/i_1: V > 0 (the reading falls as the current rises)
+   **under-compensated**, V < 0 **over-compensated**. cypilot proposes the
+   dead time corrected by V / (V_dc f_pwm) (to be checked against the
+   compensation law of UNIMOC before the first release of the flow) and, with
+   the operator's approval, writes it and runs the check again.
+4. Safety as the startup aid (section 7.7): stop all, the end of the lease, a
+   disconnect and the E-stop end the hold; the hold ends by itself after
+   20 s; the current stays below `i_max`.
+
+**Heat run (the thermal parameters).** A long recording with a plan:
+
+1. Preconditions as the R_s check, plus a passed R_s check of this firmware
+   and setup (cypilot keeps it in the run's metadata); the motor cold.
+2. Phases, set by the operator with sensible defaults: **heat** at a current
+   (default 70 % of `i_max`) until the winding reaches a target (default
+   `derate_start` - 10 K) or a time (default 60 min); **cool** at a small
+   measuring current (default 4 A, at least `rs_current_min`) for as long
+   again, so R_s stays measured and the two masses separate. A thermocouple
+   of the bench can be added as a column (a channel of another node or a
+   value typed in by hand at times).
+3. cypilot holds the setpoint with the lease and logs the four state
+   registers at 1 Hz with the setpoints and the `DriveStatus` (a run,
+   `core.runs`, so it survives a reload of the page and can be exported).
+   It stops the run on the winding at `derate_start`, a trip, a derating flag,
+   the end of the lease or the operator; the stop disengages the drive.
+4. The fit: the same model as UNIMOC's `MotorThermalModel` (backward Euler,
+   R_s(T)) fitted to the winding temperature (and a sensor column) by
+   Nelder-Mead on the logarithms of `C_winding`, `C_stator`, `R_winding`,
+   `R_stator`, as UNIMOC's `scripts/thermal_fit.py`, in `core/thermal.py`
+   (pure Python, no numpy). It shows the four values with the time constants,
+   the residual and the measured against the fitted curve, next to the
+   registers of the node; Apply writes them after the operator's approval,
+   Store keeps them, and the result can be saved as the profile of the motor
+   type (section 5).
+5. Export: the run as CSV in the columns of `scripts/thermal_log.py`
+   (`time,current,winding,stator,rs`), so the UNIMOC script fits it too.
+
+`cypilot-ctl thermal NODE check`, `thermal NODE heat-run [--current A]
+[--target degC] [--minutes N]` and `thermal fit run.csv` are the same at the
+terminal.
+
+**Tests** (section 11): the fit against synthetic runs (recovered within
+1 %, the self-test of `thermal_fit.py`) and against a run recorded from the
+simulation with `unimoc.sim.motor_heating`; the R_s check against the
+simulation (good with the factory settings; under- and over-compensated need
+a dead time of the simulated bridge, firmware item 8 of section 9); the stop
+conditions of the heat run (derating, trip, lease, disconnect) against the
+simulation with short phases; a warm start (`unimoc.sim.motor_temperature`)
+seen by the card. A full heat run with the factory parameters (stator time
+constant 20 min) is too slow for CI; it needs the thermal parameters of the
+simulated motor as registers (firmware item 8).
+
 ## 8. Signals, plots, scope
 
 ### 8.1 Live plots
@@ -512,6 +610,14 @@ Each its own PR with ztest and pytest coverage:
    multi-node simulation of `TODO.md` ("Next") is the precondition. The GUI
    repository's tests use it from the release.
 7. **License of `dsdl/unimoc/`** (section 2.1), if accepted.
+8. **Motor temperature** (section 7.9): done in UNIMOC 2026-11-17 (the
+   thermal model, its registers, traces, `DriveStatus.0.2`, the simulated
+   heating). Open for cypilot's tests: `unimoc.sim.dead_time` (the dead time
+   of the simulated bridge, for the verdicts of the R_s check), the thermal
+   parameters of the simulated motor as `unimoc.sim.motor_thermal.*` (a heat
+   run in minutes of CI), and the gate result of the R_s estimate on the bus
+   (`unimoc.motor.temperature.rs_rejected`, so the card shows a window the
+   drive did not use).
 
 ## 10. Transports and platforms
 
@@ -582,6 +688,8 @@ CI.
 | G6 | cypilot | Profiles for the cart (wheel panel, cart sketch), the e-bike (after PR #29), the VDC and the BMS as they appear | Per node type |
 | G7 | cypilot | Windows bundle, README workflows | Install on a clean Windows machine |
 | F3 | unimoc | Description file served over `uavcan.file.Read` (with the firmware update) | GUI reads it from the node |
+| F4 | unimoc | Motor temperature (done 2026-11-17); the simulation registers and the gate result of section 9 item 8 | Released with a `unimoc` tag |
+| G8 | cypilot | Motor temperature card, R_s check, heat run with the fit (section 7.9), `cypilot-ctl thermal`; `DEFAULT_UNIMOC_REF` to the release of F4 (`DriveStatus.0.2`) | R_s check and a short heat run with its fit pass against the simulation |
 
 F1 and G0 to G3 make the tool useful on the bench with one to four drives;
 G4 and G5 replace most cymon sessions for daily work.
@@ -598,3 +706,10 @@ G4 and G5 replace most cymon sessions for daily work.
    the change of C1 if it does not.
 6. **DSDL sharing:** decided 2026-10-24: no copy, download at run time
    (section 2.2); a separate DSDL repository stays an option.
+7. **Heat run on the cart:** a hub motor on the cart has no locked rotor;
+   the R_s check and the heat run need the wheel blocked by a fixture or the
+   brake, or a slow dyno (below `rs_speed_max`). To decide with the bench.
+8. **The dead-time proposal of the R_s check** (section 7.9): the factor
+   between the residual voltage and the dead time follows UNIMOC's
+   compensation law; until it is checked cypilot shows V and the direction
+   only.
