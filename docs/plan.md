@@ -467,32 +467,67 @@ R_s temperatures and the current, polled at 1 Hz while the node is selected,
 against the derate band; the four values are channels of the recorder
 (section 8.1) like the subjects.
 
-**R_s check (the dead-time compensation).** An assisted flow, after M1
-(section 7.8) and before any heat run:
+**The bench** (decided 2026-11-18): two hoverboard hub motors with their
+shafts coupled, each on its own drive, run against each other. The motor
+under test (DUT) runs in current mode and makes the heat; the load motor runs
+in speed mode and holds the shaft, still or slowly turning. Both drives
+estimate their temperatures, so one run heats and logs both. The flows below
+work on such a **bench pair** of two nodes the operator picks (DUT and load),
+and cypilot checks its setup before the first run:
 
-1. Preconditions, each confirmed: the motor is cold (at the room temperature,
-   entered or taken from `.ambient`), the rotor is locked or turns slowly
-   (below `rs_speed_max`), `unimoc.control.dtc.dead_time` holds the result of
-   M1, `R_temperature` the temperature of that M1 run.
-2. With the lease (section 7.2) the drive is engaged in current mode and holds
-   two currents, about 30 % and 60 % of `unimoc.motor.limits.i_max`, for 5 s
-   each; cypilot reads `unimoc.motor.temperature.rs` at the end of each.
-3. Verdict: both within 5 K of the room temperature: **compensation good**.
-   Otherwise the apparent resistance R_k = R + V/i_k of the two currents gives
-   the residual inverter voltage V = (R_1 - R_2) / (1/i_1 - 1/i_2) and the
-   resistance R = R_1 - V/i_1: V > 0 (the reading falls as the current rises)
-   **under-compensated**, V < 0 **over-compensated**. cypilot proposes the
-   dead time corrected by V / (V_dc f_pwm) (to be checked against the
-   compensation law of UNIMOC before the first release of the flow) and, with
-   the operator's approval, writes it and runs the check again.
-4. Safety as the startup aid (section 7.7): stop all, the end of the lease, a
-   disconnect and the E-stop end the hold; the hold ends by itself after
-   20 s; the current stays below `i_max`.
+- **Setpoints per drive** (point 4 of section 13): the DUT subscribes the
+  current setpoint and not the speed setpoint (`uavcan.sub.speed_setpoint.id`
+  65535), the load drive the other way round (`uavcan.sub.current_setpoint.id`
+  and `uavcan.sub.torque_setpoint.id` 65535). cypilot offers to set them
+  (store and restart, they are ports) and refuses a pair where one setpoint
+  would reach both drives.
+- **The load drive** holds the speed setpoint with a current limit
+  (`unimoc.motor.limits.i_max`) above the DUT's current, and gets the
+  readiness on its own subject (section 7.1); both drives are engaged and
+  disengaged together, the load drive first on, last off.
+- **Speed of the checks:** below `unimoc.motor.thermal.rs_speed_max`
+  (electrical) of the DUT; default 0.5 rad/s at the shaft, about one
+  electrical revolution per second at 15 pole pairs.
+
+**R_s check (the dead-time compensation).** An assisted flow on the bench
+pair, after M1 (section 7.8) and before any heat run (UNIMOC
+`docs/motor_thermal_plan.md` section 6, tested there in the simulation):
+
+1. Preconditions, each confirmed: the DUT is cold (the room temperature
+   T_room entered, or `unimoc.motor.thermal.ambient`),
+   `unimoc.control.dtc.dead_time` holds the result of M1 and
+   `unimoc.control.dtc.f_pwm` equals `unimoc.control.pwm_frequency` (cypilot
+   offers to set it), `unimoc.motor.stator.R` and `.R_temperature` are those
+   of the M1 run.
+2. The load drive turns the shaft at the check speed; with the lease
+   (section 7.2) the DUT holds about 30 % of its rated current (default
+   0.3 × `unimoc.motor.limits.i_max`) for 2 s, then cypilot averages
+   `unimoc.motor.temperature.rs` over the next 2 s (T_rs) and reads
+   `unimoc.motor.temperature.current` (|i|).
+3. The residual inverter voltage V = R_ref α (T_rs − T_room) |i| with
+   R_ref = `unimoc.motor.stator.R` and α = 3.93e-3 /K (UNIMOC's copper
+   coefficient). |V| below 0.05 V: **compensation good**. V > 0 (the
+   reading above the room): **under-compensated**; V < 0:
+   **over-compensated** (the drive then also sets
+   `unimoc.motor.temperature.rs_rejected`).
+4. Otherwise cypilot proposes the dead time corrected by
+   V / ((4/π) V_dc f_pwm), not below zero (V_dc from the telemetry); with the
+   operator's approval it writes it (the drive takes it while disengaged) and
+   runs the check again, at most five rounds. In the simulation three rounds
+   find the dead time of the bridge within 2 ns, from too little and from too
+   much compensation. One current with the cold resistance known is the
+   method: a difference of two currents proved too sensitive to the angle
+   factor of the dead time (UNIMOC plan section 6), and the slowly turning
+   shaft averages that factor.
+5. Safety as the startup aid (section 7.7): stop all, the end of the lease, a
+   disconnect and the E-stop end the hold and disengage both drives; the hold
+   ends by itself after 10 s; the current stays below `i_max`.
 
 **Heat run (the thermal parameters).** A long recording with a plan:
 
 1. Preconditions as the R_s check, plus a passed R_s check of this firmware
-   and setup (cypilot keeps it in the run's metadata); the motor cold.
+   and setup (cypilot keeps it in the run's metadata); the motor cold; the
+   load drive holds the shaft (still or at the check speed).
 2. Phases, set by the operator with sensible defaults: **heat** at a current
    (default 70 % of `i_max`) until the winding reaches a target (default
    `derate_start` - 10 K) or a time (default 60 min); **cool** at a small
@@ -500,9 +535,11 @@ against the derate band; the four values are channels of the recorder
    again, so R_s stays measured and the two masses separate. A thermocouple
    of the bench can be added as a column (a channel of another node or a
    value typed in by hand at times).
-3. cypilot holds the setpoint with the lease and logs the four state
-   registers at 1 Hz with the setpoints and the `DriveStatus` (a run,
+3. cypilot holds both setpoints with the lease and logs the state registers
+   of both drives at 1 Hz with the setpoints and the `DriveStatus` (one run,
    `core.runs`, so it survives a reload of the page and can be exported).
+   The load motor carries about the same current: its log is a second heat
+   run of the same motor type, which the fit can use as a check.
    It stops the run on the winding at `derate_start`, a trip, a derating flag,
    the end of the lease or the operator; the stop disengages the drive.
 4. The fit: the same model as UNIMOC's `MotorThermalModel` (backward Euler,
@@ -524,13 +561,17 @@ terminal.
 **Tests** (section 11): the fit against synthetic runs (recovered within
 1 %, the self-test of `thermal_fit.py`) and against a run recorded from the
 simulation with `unimoc.sim.motor_heating`; the R_s check against the
-simulation (good with the factory settings; under- and over-compensated need
-a dead time of the simulated bridge, firmware item 8 of section 9); the stop
-conditions of the heat run (derating, trip, lease, disconnect) against the
-simulation with short phases; a warm start (`unimoc.sim.motor_temperature`)
-seen by the card. A full heat run with the factory parameters (stator time
-constant 20 min) is too slow for CI; it needs the thermal parameters of the
-simulated motor as registers (firmware item 8).
+simulation, where one drive plays the bench pair (the imposed speed of the
+plant, `unimoc.sim.shaft_mode` 1 and `imposed_speed`, is the load motor):
+good with an ideal bridge, under-compensated with `unimoc.sim.dead_time`
+500 ns and no compensation, over-compensated with an ideal bridge and
+300 ns, each converging in at most five rounds; the stop conditions of the
+heat run (derating, trip, lease, disconnect) with short phases; a heat run
+of a few minutes with a light simulated motor
+(`unimoc.sim.motor_thermal.C_winding` 1.5 J/K, `.C_stator` 15 J/K) and its
+fit against those parameters; a warm start (`unimoc.sim.motor_temperature`)
+seen by the card. The bench pair of two nodes (the setpoint check) with two
+simulated drives of `scripts/sim_cluster.sh` on `vcan0`.
 
 ## 8. Signals, plots, scope
 
@@ -612,12 +653,10 @@ Each its own PR with ztest and pytest coverage:
 7. **License of `dsdl/unimoc/`** (section 2.1), if accepted.
 8. **Motor temperature** (section 7.9): done in UNIMOC 2026-11-17 (the
    thermal model, its registers, traces, `DriveStatus.0.2`, the simulated
-   heating). Open for cypilot's tests: `unimoc.sim.dead_time` (the dead time
-   of the simulated bridge, for the verdicts of the R_s check), the thermal
-   parameters of the simulated motor as `unimoc.sim.motor_thermal.*` (a heat
-   run in minutes of CI), and the gate result of the R_s estimate on the bus
-   (`unimoc.motor.temperature.rs_rejected`, so the card shows a window the
-   drive did not use).
+   heating) and 2026-11-18 (F4: `unimoc.sim.dead_time`,
+   `unimoc.sim.motor_thermal.*`, `unimoc.motor.temperature.rs_rejected`, the
+   R_s check fixed and tested in the simulation and its pytest). Open: a
+   UNIMOC release with them.
 
 ## 10. Transports and platforms
 
@@ -688,8 +727,8 @@ CI.
 | G6 | cypilot | Profiles for the cart (wheel panel, cart sketch), the e-bike (after PR #29), the VDC and the BMS as they appear | Per node type |
 | G7 | cypilot | Windows bundle, README workflows | Install on a clean Windows machine |
 | F3 | unimoc | Description file served over `uavcan.file.Read` (with the firmware update) | GUI reads it from the node |
-| F4 | unimoc | Motor temperature (done 2026-11-17); the simulation registers and the gate result of section 9 item 8 | Released with a `unimoc` tag |
-| G8 | cypilot | Motor temperature card, R_s check, heat run with the fit (section 7.9), `cypilot-ctl thermal`; `DEFAULT_UNIMOC_REF` to the release of F4 (`DriveStatus.0.2`) | R_s check and a short heat run with its fit pass against the simulation |
+| F4 | unimoc | **Done 2026-11-18** (motor temperature 2026-11-17, the simulation registers, the gate result and the R_s check of section 9 item 8); open: the release | Released with a `unimoc` tag |
+| G8 | cypilot | Motor temperature card, bench pair, R_s check, heat run with the fit (section 7.9), `cypilot-ctl thermal`; `DEFAULT_UNIMOC_REF` to the release of F4 (`DriveStatus.0.2`) | R_s check and a short heat run with its fit pass against the simulation |
 
 F1 and G0 to G3 make the tool useful on the bench with one to four drives;
 G4 and G5 replace most cymon sessions for daily work.
@@ -701,15 +740,16 @@ G4 and G5 replace most cymon sessions for daily work.
    relicensing `dsdl/unimoc/` to a permissive license is open in UNIMOC.
 3. **Readiness base subject-ID:** 1024 + node-ID (proposed, section 7.1).
 4. **Setpoints per node:** stay shared (proposed, enough for the bench and the
-   cart), or derived per node like the readiness.
+   cart), or derived per node like the readiness. The thermal bench pair
+   (section 7.9) splits them by the subscriptions of each drive (one drive
+   without the speed setpoint, the other without current and torque).
 5. **cymon host API:** what the cymon host tool already offers as a library;
    the change of C1 if it does not.
 6. **DSDL sharing:** decided 2026-10-24: no copy, download at run time
    (section 2.2); a separate DSDL repository stays an option.
-7. **Heat run on the cart:** a hub motor on the cart has no locked rotor;
-   the R_s check and the heat run need the wheel blocked by a fixture or the
-   brake, or a slow dyno (below `rs_speed_max`). To decide with the bench.
-8. **The dead-time proposal of the R_s check** (section 7.9): the factor
-   between the residual voltage and the dead time follows UNIMOC's
-   compensation law; until it is checked cypilot shows V and the direction
-   only.
+7. Decided 2026-11-18: **the thermal tests run on a bench of two coupled
+   hoverboard motors** (section 7.9), not on the cart.
+8. Decided 2026-11-18: **the dead-time proposal of the R_s check** is
+   V / ((4/π) V_dc f_pwm), iterated (section 7.9, UNIMOC
+   `docs/motor_thermal_plan.md` section 6); whether the real bridge
+   converges as fast as the simulation shows on the bench.
