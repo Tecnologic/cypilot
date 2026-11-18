@@ -495,10 +495,13 @@ pair, after M1 (section 7.8) and before any heat run (UNIMOC
 
 1. Preconditions, each confirmed: the DUT is cold (the room temperature
    T_room entered, or `unimoc.motor.thermal.ambient`),
-   `unimoc.control.dtc.dead_time` holds the result of M1 and
-   `unimoc.control.dtc.f_pwm` equals `unimoc.control.pwm_frequency` (cypilot
-   offers to set it), `unimoc.motor.stator.R` and `.R_temperature` are those
-   of the M1 run.
+   `unimoc.control.dtc.dead_time` holds the result of M1,
+   `unimoc.motor.stator.R` and `.R_temperature` are those of the M1 run. The
+   compensation runs at the PWM frequency of the timer, also the automatic
+   one (`unimoc.control.pwm_frequency` 0); the old register
+   `unimoc.control.dtc.f_pwm` is gone with the F4 release (a node that still
+   lists it runs an older firmware: cypilot warns that its compensation may
+   use the wrong frequency).
 2. The load drive turns the shaft at the check speed; with the lease
    (section 7.2) the DUT holds about 30 % of its rated current (default
    0.3 × `unimoc.motor.limits.i_max`) for 2 s, then cypilot averages
@@ -511,7 +514,8 @@ pair, after M1 (section 7.8) and before any heat run (UNIMOC
    **over-compensated** (the drive then also sets
    `unimoc.motor.temperature.rs_rejected`).
 4. Otherwise cypilot proposes the dead time corrected by
-   V / ((4/π) V_dc f_pwm), not below zero (V_dc from the telemetry); with the
+   V / ((4/π) V_dc f_pwm), not below zero (V_dc from the telemetry, f_pwm the
+   frequency the timer runs: the first element of `unimoc.timing.pwm`); with the
    operator's approval it writes it (the drive takes it while disengaged) and
    runs the check again, at most five rounds. In the simulation three rounds
    find the dead time of the bridge within 2 ns, from too little and from too
